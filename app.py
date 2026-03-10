@@ -226,6 +226,76 @@ def transcribe():
     return Response(generate(), mimetype="text/event-stream")
 
 
+def process_transcription(file_obj, api_key):
+    """Shared transcription logic. Returns result dict or raises."""
+    tmp_dir = tempfile.mkdtemp(prefix="stt_")
+    try:
+        ext = file_obj.filename.rsplit(".", 1)[1].lower()
+        input_path = os.path.join(tmp_dir, f"input.{ext}")
+        file_obj.save(input_path)
+
+        client = OpenAI(api_key=api_key)
+
+        audio_path = os.path.join(tmp_dir, "audio.mp3")
+        extract_audio(input_path, audio_path)
+
+        total_duration = get_duration(audio_path)
+        chunks = split_audio(audio_path, tmp_dir)
+
+        all_segments = []
+        offset = 0.0
+        for chunk_path in chunks:
+            chunk_duration = get_duration(chunk_path)
+            segments = transcribe_chunk(client, chunk_path, offset)
+            all_segments.extend(segments)
+            offset += chunk_duration
+
+        merged = merge_segments(all_segments)
+
+        lines = []
+        full_text = []
+        for seg in merged:
+            ts = f"[{format_timestamp(seg['start'])} -> {format_timestamp(seg['end'])}]"
+            speaker = seg["speaker"]
+            text = seg["text"].strip()
+            lines.append(f"{ts}  {speaker}: {text}")
+            full_text.append(text)
+
+        return {
+            "success": True,
+            "formatted_text": "\n\n".join(lines),
+            "full_text": " ".join(full_text),
+            "segments": merged,
+            "duration_seconds": round(total_duration, 2),
+        }
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@app.route("/api/transcribe", methods=["POST"])
+def api_transcribe():
+    if "file" not in request.files:
+        return jsonify({"success": False, "error": "No file uploaded"}), 400
+
+    file = request.files["file"]
+    if not file.filename or not allowed_file(file.filename):
+        return jsonify({"success": False, "error": f"Unsupported format. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"}), 400
+
+    # API key from Authorization header
+    auth = request.headers.get("Authorization", "")
+    api_key = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+    if not api_key:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        return jsonify({"success": False, "error": "Missing Authorization header. Use: Authorization: Bearer sk-..."}), 401
+
+    try:
+        result = process_transcription(file, api_key)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"\n  Speech-to-Text is running at: http://localhost:{port}\n")

@@ -10,6 +10,7 @@ Local web app for transcribing audio/video files using OpenAI's `gpt-4o-transcri
 - **Real-time progress** — SSE-based progress bar shows each processing step
 - **Wide format support** — MP3, MP4, MOV, M4A, WAV, WEBM, AVI, MKV, FLAC, OGG, AAC, WMA
 - **API key memory** — enter once, saved in browser localStorage
+- **REST API** — synchronous `POST /api/transcribe` endpoint for backend integration
 
 ## Prerequisites
 
@@ -64,6 +65,63 @@ Then open `http://localhost:8080` in your browser.
    - **Plain Text** — merged full text
    - **JSON** — raw segments with speaker, text, start, end
 5. Copy to clipboard or download as file
+
+## REST API
+
+Synchronous JSON endpoint for backend-to-backend integration (e.g. from Node.js).
+
+### `POST /api/transcribe`
+
+**Headers:**
+```
+Authorization: Bearer sk-your-openai-api-key
+Content-Type: multipart/form-data
+```
+
+**Body:** multipart form with a `file` field.
+
+**Example (curl):**
+```bash
+curl -X POST http://localhost:8080/api/transcribe \
+  -H "Authorization: Bearer sk-..." \
+  -F "file=@meeting.mp4"
+```
+
+**Example (Node.js):**
+```js
+const form = new FormData();
+form.append('file', fs.createReadStream('meeting.mp4'));
+
+const res = await fetch('http://localhost:8080/api/transcribe', {
+  method: 'POST',
+  headers: { 'Authorization': 'Bearer sk-...' },
+  body: form,
+});
+const data = await res.json();
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "formatted_text": "[00:00:00.00 -> 00:00:05.20]  Speaker 1: Hello...",
+  "full_text": "Hello...",
+  "segments": [
+    {"speaker": "Speaker 1", "text": "Hello...", "start": 0.0, "end": 5.2}
+  ],
+  "duration_seconds": 125.3
+}
+```
+
+**Error response:**
+```json
+{
+  "success": false,
+  "error": "error message"
+}
+```
+
+> Note: This is a synchronous endpoint — the request blocks until processing completes. For long files, set your HTTP client timeout to at least 30 minutes.
 
 ## How It Works
 
