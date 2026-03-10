@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Speech to Text</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f0f0f;
+    color: #e0e0e0;
+    min-height: 100vh;
+    padding: 40px 20px;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+  h1 {
+    font-size: 28px;
+    font-weight: 600;
+    margin-bottom: 30px;
+    color: #fff;
+    text-align: center;
+  }
+
+  /* API Key Section */
+  .api-section {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .api-section label {
+    display: block;
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 8px;
+  }
+  .api-row {
+    display: flex;
+    gap: 10px;
+  }
+  .api-row input {
+    flex: 1;
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 8px;
+    color: #e0e0e0;
+    padding: 10px 14px;
+    font-size: 14px;
+    font-family: monospace;
+    outline: none;
+  }
+  .api-row input:focus { border-color: #4a9eff; }
+  .api-row button {
+    padding: 10px 20px;
+    background: #2a2a2a;
+    color: #aaa;
+    border: 1px solid #333;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .api-row button:hover { background: #333; color: #fff; }
+  .api-saved {
+    font-size: 12px;
+    color: #4a9eff;
+    margin-top: 6px;
+    display: none;
+  }
+
+  /* Upload Area */
+  .upload-area {
+    background: #1a1a1a;
+    border: 2px dashed #333;
+    border-radius: 12px;
+    padding: 60px 40px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-bottom: 20px;
+  }
+  .upload-area:hover, .upload-area.dragover {
+    border-color: #4a9eff;
+    background: #1a2233;
+  }
+  .upload-area.has-file {
+    border-color: #4a9eff;
+    border-style: solid;
+    padding: 30px 40px;
+  }
+  .upload-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.5; }
+  .upload-text { font-size: 16px; color: #888; }
+  .upload-text span { color: #4a9eff; }
+  .upload-formats { font-size: 12px; color: #555; margin-top: 10px; }
+  .file-info {
+    display: none;
+    align-items: center;
+    gap: 14px;
+    text-align: left;
+  }
+  .file-info .file-icon { font-size: 32px; opacity: 0.6; }
+  .file-info .file-details { flex: 1; }
+  .file-info .file-name { font-size: 15px; color: #fff; word-break: break-all; }
+  .file-info .file-size { font-size: 13px; color: #666; margin-top: 2px; }
+  .file-info .file-remove {
+    background: none;
+    border: none;
+    color: #666;
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px 8px;
+  }
+  .file-info .file-remove:hover { color: #ff4444; }
+
+  /* Transcribe Button */
+  .btn-transcribe {
+    width: 100%;
+    padding: 16px;
+    background: #4a9eff;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    margin-bottom: 20px;
+  }
+  .btn-transcribe:hover { background: #3a8eef; }
+  .btn-transcribe:disabled {
+    background: #2a2a2a;
+    color: #555;
+    cursor: not-allowed;
+  }
+
+  /* Progress */
+  .progress-area {
+    display: none;
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .progress-bar-bg {
+    width: 100%;
+    height: 6px;
+    background: #222;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+  .progress-bar {
+    height: 100%;
+    background: #4a9eff;
+    border-radius: 3px;
+    transition: width 0.3s;
+    width: 0%;
+  }
+  .progress-text { font-size: 13px; color: #888; }
+
+  /* Result */
+  .result-area {
+    display: none;
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .result-tabs {
+    display: flex;
+    border-bottom: 1px solid #2a2a2a;
+  }
+  .result-tab {
+    flex: 1;
+    padding: 14px;
+    text-align: center;
+    font-size: 14px;
+    color: #888;
+    cursor: pointer;
+    border: none;
+    background: none;
+    transition: all 0.2s;
+  }
+  .result-tab.active { color: #4a9eff; border-bottom: 2px solid #4a9eff; }
+  .result-tab:hover { color: #ccc; }
+  .result-content {
+    padding: 24px;
+    max-height: 600px;
+    overflow-y: auto;
+  }
+  .result-content pre {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    line-height: 1.8;
+    color: #ccc;
+  }
+  .result-actions {
+    padding: 16px 24px;
+    border-top: 1px solid #2a2a2a;
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+  }
+  .btn-copy, .btn-download {
+    padding: 8px 20px;
+    border-radius: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    border: 1px solid #333;
+    background: #222;
+    color: #aaa;
+  }
+  .btn-copy:hover, .btn-download:hover { background: #333; color: #fff; }
+
+  /* Error */
+  .error-msg {
+    display: none;
+    background: #2a1515;
+    border: 1px solid #442222;
+    border-radius: 10px;
+    padding: 16px 20px;
+    color: #ff6b6b;
+    font-size: 14px;
+    margin-bottom: 20px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Speech to Text Transcription</h1>
+
+  <!-- API Key -->
+  <div class="api-section">
+    <label>OpenAI API Key</label>
+    <div class="api-row">
+      <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
+      <button onclick="toggleKeyVisibility()" id="toggleBtn">Show</button>
+      <button onclick="saveApiKey()">Save</button>
+    </div>
+    <div class="api-saved" id="apiSaved">API key saved to browser</div>
+  </div>
+
+  <!-- Upload -->
+  <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+    <div class="upload-default" id="uploadDefault">
+      <div class="upload-icon">&#x1F3A4;</div>
+      <div class="upload-text">Drop your audio/video file here or <span>browse</span></div>
+      <div class="upload-formats">MP3, MP4, MOV, M4A, WAV, WEBM, AVI, MKV, FLAC, OGG, AAC, WMA</div>
+    </div>
+    <div class="file-info" id="fileInfo">
+      <div class="file-icon">&#x1F3B5;</div>
+      <div class="file-details">
+        <div class="file-name" id="fileName"></div>
+        <div class="file-size" id="fileSize"></div>
+      </div>
+      <button class="file-remove" onclick="removeFile(event)">&times;</button>
+    </div>
+  </div>
+  <input type="file" id="fileInput" hidden
+    accept=".mp3,.mp4,.mpeg,.mpga,.m4a,.wav,.webm,.mov,.avi,.mkv,.flac,.ogg,.aac,.wma">
+
+  <!-- Transcribe -->
+  <button class="btn-transcribe" id="btnTranscribe" onclick="startTranscribe()" disabled>
+    Start Transcription
+  </button>
+
+  <!-- Error -->
+  <div class="error-msg" id="errorMsg"></div>
+
+  <!-- Progress -->
+  <div class="progress-area" id="progressArea">
+    <div class="progress-bar-bg"><div class="progress-bar" id="progressBar"></div></div>
+    <div class="progress-text" id="progressText">Uploading and processing...</div>
+  </div>
+
+  <!-- Result -->
+  <div class="result-area" id="resultArea">
+    <div class="result-tabs">
+      <button class="result-tab active" onclick="switchTab('formatted')">Timestamped</button>
+      <button class="result-tab" onclick="switchTab('plain')">Plain Text</button>
+      <button class="result-tab" onclick="switchTab('json')">JSON</button>
+    </div>
+    <div class="result-content">
+      <pre id="resultFormatted"></pre>
+      <pre id="resultPlain" style="display:none"></pre>
+      <pre id="resultJson" style="display:none"></pre>
+    </div>
+    <div class="result-actions">
+      <button class="btn-copy" onclick="copyResult()">Copy</button>
+      <button class="btn-download" onclick="downloadResult()">Download .txt</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let selectedFile = null;
+let currentTab = 'formatted';
+let resultData = {};
+
+// Load saved API key
+window.addEventListener('DOMContentLoaded', () => {
+  const saved = localStorage.getItem('openai_api_key');
+  if (saved) document.getElementById('apiKey').value = saved;
+});
+
+function saveApiKey() {
+  const key = document.getElementById('apiKey').value.trim();
+  if (key) {
+    localStorage.setItem('openai_api_key', key);
+    const el = document.getElementById('apiSaved');
+    el.style.display = 'block';
+    setTimeout(() => el.style.display = 'none', 2000);
+  }
+}
+
+function toggleKeyVisibility() {
+  const input = document.getElementById('apiKey');
+  const btn = document.getElementById('toggleBtn');
+  if (input.type === 'password') {
+    input.type = 'text';
+    btn.textContent = 'Hide';
+  } else {
+    input.type = 'password';
+    btn.textContent = 'Show';
+  }
+}
+
+// Drag and drop
+const uploadArea = document.getElementById('uploadArea');
+uploadArea.addEventListener('dragover', e => {
+  e.preventDefault();
+  uploadArea.classList.add('dragover');
+});
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+uploadArea.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadArea.classList.remove('dragover');
+  if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+});
+
+document.getElementById('fileInput').addEventListener('change', e => {
+  if (e.target.files.length) setFile(e.target.files[0]);
+});
+
+function setFile(file) {
+  selectedFile = file;
+  document.getElementById('fileName').textContent = file.name;
+  document.getElementById('fileSize').textContent = formatSize(file.size);
+  document.getElementById('uploadDefault').style.display = 'none';
+  document.getElementById('fileInfo').style.display = 'flex';
+  uploadArea.classList.add('has-file');
+  document.getElementById('btnTranscribe').disabled = false;
+}
+
+function removeFile(e) {
+  e.stopPropagation();
+  selectedFile = null;
+  document.getElementById('fileInput').value = '';
+  document.getElementById('uploadDefault').style.display = '';
+  document.getElementById('fileInfo').style.display = 'none';
+  uploadArea.classList.remove('has-file');
+  document.getElementById('btnTranscribe').disabled = true;
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+async function startTranscribe() {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  if (!apiKey) { showError('Please enter your OpenAI API key'); return; }
+  if (!selectedFile) { showError('Please select a file'); return; }
+
+  localStorage.setItem('openai_api_key', apiKey);
+
+  hideError();
+  document.getElementById('resultArea').style.display = 'none';
+  document.getElementById('progressArea').style.display = 'block';
+  document.getElementById('btnTranscribe').disabled = true;
+  document.getElementById('btnTranscribe').textContent = 'Processing...';
+  setProgress(2, 'Uploading file...');
+
+  const formData = new FormData();
+  formData.append('file', selectedFile);
+  formData.append('api_key', apiKey);
+
+  try {
+    const response = await fetch('/transcribe', { method: 'POST', body: formData });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // keep incomplete line
+
+      let eventType = '';
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith('data: ') && eventType) {
+          const data = JSON.parse(line.slice(6));
+          if (eventType === 'progress') {
+            setProgress(data.pct, data.msg);
+          } else if (eventType === 'result') {
+            resultData = data;
+            showResult(data);
+          } else if (eventType === 'error') {
+            throw new Error(data.error);
+          }
+          eventType = '';
+        }
+      }
+    }
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    document.getElementById('progressArea').style.display = 'none';
+    document.getElementById('btnTranscribe').disabled = false;
+    document.getElementById('btnTranscribe').textContent = 'Start Transcription';
+  }
+}
+
+function setProgress(pct, text) {
+  document.getElementById('progressBar').style.width = pct + '%';
+  document.getElementById('progressText').textContent = text;
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorMsg');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function hideError() {
+  document.getElementById('errorMsg').style.display = 'none';
+}
+
+function showResult(data) {
+  document.getElementById('resultFormatted').textContent = data.formatted;
+  document.getElementById('resultPlain').textContent = data.full_text;
+  document.getElementById('resultJson').textContent = JSON.stringify(data.segments, null, 2);
+  document.getElementById('resultArea').style.display = 'block';
+  switchTab('formatted');
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.result-tab').forEach(el => el.classList.remove('active'));
+  document.getElementById('resultFormatted').style.display = tab === 'formatted' ? '' : 'none';
+  document.getElementById('resultPlain').style.display = tab === 'plain' ? '' : 'none';
+  document.getElementById('resultJson').style.display = tab === 'json' ? '' : 'none';
+
+  const tabs = document.querySelectorAll('.result-tab');
+  if (tab === 'formatted') tabs[0].classList.add('active');
+  else if (tab === 'plain') tabs[1].classList.add('active');
+  else tabs[2].classList.add('active');
+}
+
+function copyResult() {
+  let text = '';
+  if (currentTab === 'formatted') text = resultData.formatted;
+  else if (currentTab === 'plain') text = resultData.full_text;
+  else text = JSON.stringify(resultData.segments, null, 2);
+
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.querySelector('.btn-copy');
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 1500);
+  });
+}
+
+function downloadResult() {
+  let text = '';
+  let ext = '.txt';
+  if (currentTab === 'formatted') text = resultData.formatted;
+  else if (currentTab === 'plain') text = resultData.full_text;
+  else { text = JSON.stringify(resultData.segments, null, 2); ext = '.json'; }
+
+  const blob = new Blob([text], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'transcription' + ext;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>
