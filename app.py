@@ -51,11 +51,36 @@ def check_cuda():
     return _cuda_available
 
 
+def _find_bundled_model(model_name):
+    """Check if a model is bundled with the frozen executable."""
+    if not getattr(sys, "frozen", False):
+        return None
+    models_dir = os.path.join(os.path.dirname(sys.executable), "models")
+    if not os.path.isdir(models_dir):
+        return None
+    # Look for directory containing the model name
+    for entry in os.listdir(models_dir):
+        if model_name in entry.lower():
+            candidate = os.path.join(models_dir, entry)
+            # Follow symlinks in snapshots directory
+            snapshots = os.path.join(candidate, "snapshots")
+            if os.path.isdir(snapshots):
+                for snap in os.listdir(snapshots):
+                    snap_dir = os.path.join(snapshots, snap)
+                    if os.path.isdir(snap_dir) and os.path.isfile(os.path.join(snap_dir, "model.bin")):
+                        return snap_dir
+            if os.path.isfile(os.path.join(candidate, "model.bin")):
+                return candidate
+    return None
+
+
 def get_whisper_model(model_name, preferred_device=None):
     """Lazy-load a faster-whisper model. Auto-detect CUDA with fallback."""
     cache_key = f"{model_name}_{preferred_device or 'auto'}"
     if cache_key not in _whisper_models:
         from faster_whisper import WhisperModel
+        # Use bundled model path if available
+        model_path = _find_bundled_model(model_name) or model_name
         if preferred_device == "cpu":
             devices = [("cpu", "int8")]
         elif preferred_device == "cuda":
@@ -64,7 +89,7 @@ def get_whisper_model(model_name, preferred_device=None):
             devices = [("cuda", "float16"), ("cpu", "int8")]
         for device, ct in devices:
             try:
-                model = WhisperModel(model_name, device=device, compute_type=ct)
+                model = WhisperModel(model_path, device=device, compute_type=ct)
                 _whisper_models[cache_key] = model
                 _model_devices[cache_key] = device
                 print(f"  Loaded {model_name} on {device} ({ct})")
@@ -75,7 +100,15 @@ def get_whisper_model(model_name, preferred_device=None):
                 print(f"  {device} failed ({e}), trying next...")
     return _whisper_models[cache_key], _model_devices[cache_key]
 
-app = Flask(__name__)
+# Support PyInstaller frozen mode
+if getattr(sys, "frozen", False):
+    _base_dir = os.path.dirname(sys.executable)
+    _template_dir = os.path.join(_base_dir, "templates")
+else:
+    _base_dir = os.path.dirname(os.path.abspath(__file__))
+    _template_dir = os.path.join(_base_dir, "templates")
+
+app = Flask(__name__, template_folder=_template_dir)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024  # 2GB upload limit
 
 ALLOWED_EXTENSIONS = {
@@ -91,7 +124,13 @@ def allowed_file(filename):
 
 
 def get_ffmpeg():
-    """Find ffmpeg binary."""
+    """Find ffmpeg binary (check bundled location first for frozen builds)."""
+    if getattr(sys, "frozen", False):
+        exe_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+        for base in [os.path.dirname(sys.executable), getattr(sys, "_MEIPASS", "")]:
+            bundled = os.path.join(base, "ffmpeg", exe_name)
+            if os.path.isfile(bundled):
+                return bundled
     path = shutil.which("ffmpeg")
     if path:
         return path

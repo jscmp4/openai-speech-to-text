@@ -1,0 +1,153 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        variant: [cpu]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m venv venv
+          venv\Scripts\pip install -r requirements.txt
+          venv\Scripts\pip install pyinstaller
+
+      - name: Download ffmpeg
+        run: |
+          curl -L -o ffmpeg.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip
+          7z x ffmpeg.zip -offmpeg_extract
+          $ffmpegDir = Get-ChildItem -Path ffmpeg_extract -Directory | Select-Object -First 1
+          Copy-Item "$($ffmpegDir.FullName)\bin\*" -Destination "ffmpeg_bin" -Recurse
+          echo "$PWD\ffmpeg_bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+        shell: pwsh
+
+      - name: Build executable
+        run: |
+          venv\Scripts\python build.py ${{ matrix.variant }}
+        shell: cmd
+
+      - name: Create archive
+        run: |
+          cd dist
+          7z a -tzip "../SpeechToText-windows-${{ matrix.variant }}.zip" SpeechToText/
+        shell: cmd
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpeechToText-windows-${{ matrix.variant }}
+          path: SpeechToText-windows-${{ matrix.variant }}.zip
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
+      - name: Install dependencies
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: |
+          source venv/bin/activate
+          pyinstaller \
+            --noconfirm \
+            --name SpeechToText \
+            --console \
+            --add-data "templates:templates" \
+            --add-data "$(which ffmpeg):ffmpeg" \
+            --add-data "$(which ffprobe):ffmpeg" \
+            --hidden-import faster_whisper \
+            --hidden-import ctranslate2 \
+            --hidden-import huggingface_hub \
+            --hidden-import tokenizers \
+            --hidden-import openai \
+            --hidden-import flask \
+            --collect-all faster_whisper \
+            --collect-all ctranslate2 \
+            app.py
+
+      - name: Create launcher script
+        run: |
+          cat > dist/SpeechToText/run.sh << 'SCRIPT'
+          #!/bin/bash
+          cd "$(dirname "$0")"
+          open http://localhost:8080 &
+          ./SpeechToText
+          SCRIPT
+          chmod +x dist/SpeechToText/run.sh
+          chmod +x dist/SpeechToText/SpeechToText
+
+      - name: Create archive
+        run: |
+          cd dist
+          zip -r "../SpeechToText-macos-cpu.zip" SpeechToText/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpeechToText-macos-cpu
+          path: SpeechToText-macos-cpu.zip
+
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/**/*.zip
+          body: |
+            ## Downloads
+
+            | Platform | File | Notes |
+            |----------|------|-------|
+            | Windows | `SpeechToText-windows-cpu.zip` | CPU only, works on all PCs |
+            | macOS | `SpeechToText-macos-cpu.zip` | CPU only, Apple Silicon + Intel |
+
+            ### How to use
+            1. Download and extract the zip for your platform
+            2. **Windows**: double-click `Run Speech-to-Text.bat`
+            3. **macOS**: run `./run.sh` in Terminal (or double-click `SpeechToText`)
+            4. Browser opens at `http://localhost:8080`
+            5. Select a local model (tiny → large-v3) — downloads automatically on first use
+            6. Or enter an OpenAI API key for cloud transcription
+
+            ### GPU Support (Windows)
+            For NVIDIA GPU acceleration, run from source instead:
+            ```
+            git clone https://github.com/jscmp4/openai-speech-to-text.git
+            cd openai-speech-to-text
+            start.bat
+            ```
+            GPU (CUDA) is auto-detected when running from source.
