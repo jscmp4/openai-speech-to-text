@@ -137,11 +137,24 @@ def get_ffmpeg():
     )
 
 
+def get_ffprobe():
+    """Find ffprobe binary."""
+    if getattr(sys, "frozen", False):
+        exe_name = "ffprobe.exe" if sys.platform == "win32" else "ffprobe"
+        for base in [getattr(sys, "_MEIPASS", ""), os.path.dirname(sys.executable)]:
+            bundled = os.path.join(base, "ffmpeg", exe_name)
+            if os.path.isfile(bundled):
+                return bundled
+    path = shutil.which("ffprobe")
+    if path:
+        return path
+    # Fallback: same directory as ffmpeg
+    return get_ffmpeg().replace("ffmpeg", "ffprobe")
+
+
 def get_duration(file_path):
     """Get audio/video duration in seconds using ffprobe."""
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
-        ffprobe = get_ffmpeg().replace("ffmpeg", "ffprobe")
+    ffprobe = get_ffprobe()
     result = subprocess.run(
         [ffprobe, "-v", "quiet", "-print_format", "json", "-show_format", file_path],
         capture_output=True, text=True,
