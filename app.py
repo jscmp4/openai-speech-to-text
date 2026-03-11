@@ -55,7 +55,7 @@ def _find_bundled_model(model_name):
     """Check if a model is bundled with the frozen executable."""
     if not getattr(sys, "frozen", False):
         return None
-    models_dir = os.path.join(os.path.dirname(sys.executable), "models")
+    models_dir = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "models")
     if not os.path.isdir(models_dir):
         return None
     # Look for directory containing the model name
@@ -102,13 +102,11 @@ def get_whisper_model(model_name, preferred_device=None):
 
 # Support PyInstaller frozen mode
 if getattr(sys, "frozen", False):
-    _base_dir = os.path.dirname(sys.executable)
-    _template_dir = os.path.join(_base_dir, "templates")
+    _base_dir = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
 else:
     _base_dir = os.path.dirname(os.path.abspath(__file__))
-    _template_dir = os.path.join(_base_dir, "templates")
 
-app = Flask(__name__, template_folder=_template_dir)
+app = Flask(__name__, template_folder=os.path.join(_base_dir, "templates"))
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024  # 2GB upload limit
 
 ALLOWED_EXTENSIONS = {
@@ -127,7 +125,7 @@ def get_ffmpeg():
     """Find ffmpeg binary (check bundled location first for frozen builds)."""
     if getattr(sys, "frozen", False):
         exe_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
-        for base in [os.path.dirname(sys.executable), getattr(sys, "_MEIPASS", "")]:
+        for base in [getattr(sys, "_MEIPASS", ""), os.path.dirname(sys.executable)]:
             bundled = os.path.join(base, "ffmpeg", exe_name)
             if os.path.isfile(bundled):
                 return bundled
