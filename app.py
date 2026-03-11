@@ -587,7 +587,35 @@ def api_transcribe():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+def cleanup_temp_files():
+    """Clean up any leftover stt_ temp directories on startup and exit."""
+    import glob
+    tmp_root = tempfile.gettempdir()
+    for d in glob.glob(os.path.join(tmp_root, "stt_*")):
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
+    import signal
+    import atexit
+
+    # Clean up leftover temp files from previous runs
+    cleanup_temp_files()
+    # Also clean up on exit
+    atexit.register(cleanup_temp_files)
+
+    # Handle Ctrl+C and window close gracefully
+    def handle_exit(signum, frame):
+        print("\n  Shutting down...")
+        cleanup_temp_files()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handle_exit)
+    signal.signal(signal.SIGTERM, handle_exit)
+
     port = int(os.environ.get("PORT", 8080))
     print(f"\n  Speech-to-Text is running at: http://localhost:{port}\n")
     app.run(host="127.0.0.1", port=port, debug=False)
