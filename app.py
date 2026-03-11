@@ -5,14 +5,39 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
+from urllib.request import urlopen, Request
+from urllib.error import URLError
 
 from flask import Flask, render_template, request, jsonify, Response
 from openai import OpenAI
 
+
+def _get_cuda_libs_dir():
+    """Get the directory where downloaded CUDA DLLs are stored."""
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "cuda_libs")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "cuda_libs")
+
+
+def _has_downloaded_cuda_libs():
+    """Check if CUDA DLLs have been downloaded to our local directory."""
+    d = _get_cuda_libs_dir()
+    if not os.path.isdir(d):
+        return False
+    return any(f.endswith(".dll") and "cublas" in f.lower() for f in os.listdir(d))
+
+
 # Register NVIDIA DLL directories on Windows (needed for CUDA libraries from pip packages)
 if sys.platform == "win32":
     _dll_dirs = []
+    # Check downloaded cuda_libs directory first
+    _local_cuda = _get_cuda_libs_dir()
+    if os.path.isdir(_local_cuda):
+        _dll_dirs.append(_local_cuda)
+        os.add_dll_directory(_local_cuda)
+    # Then check pip package locations
     for pkg in ["cublas", "cudnn"]:
         dll_dir = os.path.join(sys.prefix, "Lib", "site-packages", "nvidia", pkg, "bin")
         if not os.path.isdir(dll_dir):
@@ -338,6 +363,141 @@ def api_status():
         "cuda_available": cuda,
         "default_device": "cuda" if cuda else "cpu",
     })
+
+
+def _detect_nvidia_gpu():
+    """Detect NVIDIA GPU using nvidia-smi. Returns dict with gpu info or None."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            parts = result.stdout.strip().split("\n")[0].split(", ")
+            return {
+                "name": parts[0].strip() if len(parts) > 0 else "Unknown",
+                "vram_mb": int(float(parts[1].strip())) if len(parts) > 1 else 0,
+                "driver": parts[2].strip() if len(parts) > 2 else "Unknown",
+            }
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        pass
+    return None
+
+
+@app.route("/api/gpu-info")
+def gpu_info():
+    """Return GPU detection info and CUDA library status."""
+    gpu = _detect_nvidia_gpu()
+    cuda_libs_installed = _has_downloaded_cuda_libs()
+    cuda = check_cuda()
+    return jsonify({
+        "gpu_detected": gpu is not None,
+        "gpu": gpu,
+        "cuda_libs_installed": cuda_libs_installed,
+        "cuda_available": cuda,
+    })
+
+
+@app.route("/api/install-cuda", methods=["POST"])
+def install_cuda():
+    """Download CUDA DLLs from PyPI and extract to local cuda_libs directory."""
+    if sys.platform != "win32":
+        return jsonify({"error": "GPU auto-install only supported on Windows"}), 400
+
+    def generate():
+        try:
+            cuda_dir = _get_cuda_libs_dir()
+            os.makedirs(cuda_dir, exist_ok=True)
+
+            # Packages to download from PyPI
+            packages = [
+                ("nvidia-cublas-cu12", "nvidia/cublas"),
+            ]
+
+            for pkg_name, inner_path in packages:
+                yield sse_event("progress", {"pct": 5, "msg": f"Fetching {pkg_name} info from PyPI..."})
+
+                # Get package info from PyPI JSON API
+                pypi_url = f"https://pypi.org/pypi/{pkg_name}/json"
+                req = Request(pypi_url, headers={"User-Agent": "SpeechToText/1.0"})
+                with urlopen(req, timeout=15) as resp:
+                    pkg_info = json.loads(resp.read().decode())
+
+                # Find the latest win_amd64 wheel
+                wheel_url = None
+                wheel_size = 0
+                for url_info in pkg_info.get("urls", []):
+                    fn = url_info.get("filename", "")
+                    if fn.endswith(".whl") and "win_amd64" in fn:
+                        wheel_url = url_info["url"]
+                        wheel_size = url_info.get("size", 0)
+                        break
+
+                if not wheel_url:
+                    # Try latest version's files
+                    version = pkg_info["info"]["version"]
+                    for url_info in pkg_info.get("releases", {}).get(version, []):
+                        fn = url_info.get("filename", "")
+                        if fn.endswith(".whl") and "win_amd64" in fn:
+                            wheel_url = url_info["url"]
+                            wheel_size = url_info.get("size", 0)
+                            break
+
+                if not wheel_url:
+                    yield sse_event("error", {"error": f"Could not find Windows wheel for {pkg_name}"})
+                    return
+
+                size_mb = wheel_size / (1024 * 1024)
+                yield sse_event("progress", {"pct": 10, "msg": f"Downloading {pkg_name} ({size_mb:.0f} MB)..."})
+
+                # Download the wheel to temp
+                tmp_wheel = os.path.join(cuda_dir, "_download.whl")
+                req = Request(wheel_url, headers={"User-Agent": "SpeechToText/1.0"})
+                with urlopen(req, timeout=600) as resp:
+                    total = int(resp.headers.get("Content-Length", wheel_size) or wheel_size)
+                    downloaded = 0
+                    with open(tmp_wheel, "wb") as f:
+                        while True:
+                            chunk = resp.read(1024 * 256)  # 256KB chunks
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total > 0:
+                                pct = 10 + int((downloaded / total) * 70)
+                                dl_mb = downloaded / (1024 * 1024)
+                                total_mb = total / (1024 * 1024)
+                                yield sse_event("progress", {
+                                    "pct": pct,
+                                    "msg": f"Downloading {pkg_name}... {dl_mb:.0f}/{total_mb:.0f} MB",
+                                })
+
+                yield sse_event("progress", {"pct": 85, "msg": f"Extracting DLLs from {pkg_name}..."})
+
+                # Extract DLLs from the wheel (which is a zip file)
+                dll_count = 0
+                with zipfile.ZipFile(tmp_wheel, "r") as zf:
+                    for name in zf.namelist():
+                        if name.endswith(".dll"):
+                            dll_data = zf.read(name)
+                            dll_name = os.path.basename(name)
+                            dest = os.path.join(cuda_dir, dll_name)
+                            with open(dest, "wb") as f:
+                                f.write(dll_data)
+                            dll_count += 1
+                            print(f"  Extracted: {dll_name} ({len(dll_data) / (1024*1024):.1f} MB)")
+
+                # Clean up temp wheel
+                os.remove(tmp_wheel)
+                yield sse_event("progress", {"pct": 95, "msg": f"Extracted {dll_count} DLL(s) from {pkg_name}"})
+
+            yield sse_event("progress", {"pct": 100, "msg": "CUDA libraries installed! Please restart the app to enable GPU."})
+            yield sse_event("done", {"cuda_dir": cuda_dir, "restart_required": True})
+
+        except Exception as e:
+            yield sse_event("error", {"error": str(e)})
+
+    return Response(generate(), mimetype="text/event-stream")
 
 
 @app.route("/transcribe", methods=["POST"])

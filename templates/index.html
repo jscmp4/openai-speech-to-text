@@ -72,6 +72,94 @@
   .device-badge.pending { background: #1a1a2a; color: #88a; border: 1px solid #2a2a3a; }
   .device-badge.cloud { background: #1a1a2a; color: #88f; border: 1px solid #2a2a3a; }
 
+  /* GPU Panel */
+  .gpu-panel {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    display: none;
+  }
+  .gpu-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .gpu-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 0;
+  }
+  .gpu-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+  }
+  .gpu-details {
+    min-width: 0;
+  }
+  .gpu-name {
+    font-size: 13px;
+    color: #ccc;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .gpu-meta {
+    font-size: 11px;
+    color: #666;
+    margin-top: 2px;
+  }
+  .gpu-status-badge {
+    font-size: 11px;
+    padding: 4px 12px;
+    border-radius: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .gpu-status-badge.ready { background: #1a2a1a; color: #6c6; border: 1px solid #2a3a2a; }
+  .gpu-status-badge.available { background: #2a2a1a; color: #cc6; border: 1px solid #3a3a2a; }
+  .gpu-status-badge.none { background: #1a1a1a; color: #666; border: 1px solid #2a2a2a; }
+  .btn-install-cuda {
+    padding: 6px 16px;
+    background: #2a5a2a;
+    color: #8f8;
+    border: 1px solid #3a6a3a;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .btn-install-cuda:hover { background: #3a6a3a; color: #afa; }
+  .btn-install-cuda:disabled { background: #2a2a2a; color: #555; cursor: not-allowed; }
+  .gpu-progress {
+    margin-top: 12px;
+    display: none;
+  }
+  .gpu-progress-bar-bg {
+    width: 100%;
+    height: 4px;
+    background: #222;
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 6px;
+  }
+  .gpu-progress-bar {
+    height: 100%;
+    background: #6c6;
+    border-radius: 2px;
+    transition: width 0.3s;
+    width: 0%;
+  }
+  .gpu-progress-text {
+    font-size: 11px;
+    color: #888;
+  }
+
   /* API Key Section */
   .api-section {
     background: #1a1a1a;
@@ -394,6 +482,27 @@
 <div class="container">
   <h1>Speech to Text Transcription</h1>
 
+  <!-- GPU Panel -->
+  <div class="gpu-panel" id="gpuPanel">
+    <div class="gpu-panel-header">
+      <div class="gpu-info">
+        <span class="gpu-icon" id="gpuIcon">&#x1F4BB;</span>
+        <div class="gpu-details">
+          <div class="gpu-name" id="gpuName">Detecting GPU...</div>
+          <div class="gpu-meta" id="gpuMeta"></div>
+        </div>
+      </div>
+      <span class="gpu-status-badge" id="gpuStatusBadge"></span>
+      <button class="btn-install-cuda" id="btnInstallCuda" style="display:none" onclick="installCuda()">
+        Enable GPU
+      </button>
+    </div>
+    <div class="gpu-progress" id="gpuProgress">
+      <div class="gpu-progress-bar-bg"><div class="gpu-progress-bar" id="gpuProgressBar"></div></div>
+      <div class="gpu-progress-text" id="gpuProgressText"></div>
+    </div>
+  </div>
+
   <!-- Model Selector -->
   <div class="model-section">
     <label>Transcription Model</label>
@@ -524,7 +633,114 @@ window.addEventListener('DOMContentLoaded', () => {
   // Auto-verify saved key on load
   const apiKey = document.getElementById('apiKey').value.trim();
   if (apiKey) verifyApiKey(apiKey);
+  // Detect GPU
+  detectGpu();
 });
+
+function detectGpu() {
+  const panel = document.getElementById('gpuPanel');
+  panel.style.display = 'block';
+  fetch('/api/gpu-info').then(r => r.json()).then(data => {
+    const nameEl = document.getElementById('gpuName');
+    const metaEl = document.getElementById('gpuMeta');
+    const iconEl = document.getElementById('gpuIcon');
+    const badgeEl = document.getElementById('gpuStatusBadge');
+    const btnEl = document.getElementById('btnInstallCuda');
+
+    if (!data.gpu_detected) {
+      iconEl.textContent = '\u{1F4BB}';
+      nameEl.textContent = 'No NVIDIA GPU detected';
+      metaEl.textContent = 'Using CPU for local models';
+      badgeEl.className = 'gpu-status-badge none';
+      badgeEl.textContent = 'CPU Only';
+      btnEl.style.display = 'none';
+    } else if (data.cuda_available) {
+      iconEl.textContent = '\u{1F3AE}';
+      nameEl.textContent = data.gpu.name;
+      metaEl.textContent = `${data.gpu.vram_mb} MB VRAM | Driver ${data.gpu.driver}`;
+      badgeEl.className = 'gpu-status-badge ready';
+      badgeEl.textContent = 'GPU Ready';
+      btnEl.style.display = 'none';
+    } else {
+      // GPU detected but CUDA not working
+      iconEl.textContent = '\u{1F3AE}';
+      nameEl.textContent = data.gpu.name;
+      metaEl.textContent = `${data.gpu.vram_mb} MB VRAM | Driver ${data.gpu.driver}`;
+      if (data.cuda_libs_installed) {
+        badgeEl.className = 'gpu-status-badge available';
+        badgeEl.textContent = 'Restart Required';
+        btnEl.style.display = 'none';
+        metaEl.textContent += ' | CUDA libs installed, restart app to enable GPU';
+      } else {
+        badgeEl.className = 'gpu-status-badge available';
+        badgeEl.textContent = 'GPU Available';
+        btnEl.style.display = '';
+      }
+    }
+  }).catch(() => {
+    document.getElementById('gpuPanel').style.display = 'none';
+  });
+}
+
+async function installCuda() {
+  const btn = document.getElementById('btnInstallCuda');
+  const progress = document.getElementById('gpuProgress');
+  const bar = document.getElementById('gpuProgressBar');
+  const text = document.getElementById('gpuProgressText');
+
+  btn.disabled = true;
+  btn.textContent = 'Installing...';
+  progress.style.display = 'block';
+
+  try {
+    const response = await fetch('/api/install-cuda', { method: 'POST' });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      let eventType = '';
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith('data: ') && eventType) {
+          const data = JSON.parse(line.slice(6));
+          if (eventType === 'progress') {
+            bar.style.width = data.pct + '%';
+            text.textContent = data.msg;
+          } else if (eventType === 'done') {
+            bar.style.width = '100%';
+            bar.style.background = '#6c6';
+            text.textContent = 'CUDA libraries installed! Please restart the app to use GPU.';
+            btn.textContent = 'Installed';
+            const badge = document.getElementById('gpuStatusBadge');
+            badge.className = 'gpu-status-badge available';
+            badge.textContent = 'Restart Required';
+            const meta = document.getElementById('gpuMeta');
+            meta.textContent = meta.textContent.split(' |')[0] + ' | CUDA libs installed, restart app to enable GPU';
+          } else if (eventType === 'error') {
+            text.textContent = 'Error: ' + data.error;
+            bar.style.background = '#f66';
+            btn.disabled = false;
+            btn.textContent = 'Retry';
+          }
+          eventType = '';
+        }
+      }
+    }
+  } catch (err) {
+    text.textContent = 'Error: ' + err.message;
+    bar.style.background = '#f66';
+    btn.disabled = false;
+    btn.textContent = 'Retry';
+  }
+}
 
 function onModelChange() {
   const model = document.getElementById('modelSelect').value;
