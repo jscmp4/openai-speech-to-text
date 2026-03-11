@@ -27,6 +27,7 @@ jobs:
           python -m venv venv
           venv\Scripts\pip install -r requirements.txt
           venv\Scripts\pip install pyinstaller
+        shell: cmd
 
       - name: Download ffmpeg
         run: |
@@ -75,13 +76,15 @@ jobs:
       - name: Build executable
         run: |
           source venv/bin/activate
+          FFMPEG_PATH=$(which ffmpeg)
+          FFPROBE_PATH=$(which ffprobe)
           pyinstaller \
             --noconfirm \
             --name SpeechToText \
             --console \
             --add-data "templates:templates" \
-            --add-data "$(which ffmpeg):ffmpeg" \
-            --add-data "$(which ffprobe):ffmpeg" \
+            --add-data "$FFMPEG_PATH:ffmpeg" \
+            --add-data "$FFPROBE_PATH:ffmpeg" \
             --hidden-import faster_whisper \
             --hidden-import ctranslate2 \
             --hidden-import huggingface_hub \
@@ -94,12 +97,12 @@ jobs:
 
       - name: Create launcher script
         run: |
-          cat > dist/SpeechToText/run.sh << 'SCRIPT'
+          cat > dist/SpeechToText/run.sh << 'EOF'
           #!/bin/bash
           cd "$(dirname "$0")"
           open http://localhost:8080 &
           ./SpeechToText
-          SCRIPT
+          EOF
           chmod +x dist/SpeechToText/run.sh
           chmod +x dist/SpeechToText/SpeechToText
 
@@ -140,7 +143,7 @@ jobs:
             2. **Windows**: double-click `Run Speech-to-Text.bat`
             3. **macOS**: run `./run.sh` in Terminal (or double-click `SpeechToText`)
             4. Browser opens at `http://localhost:8080`
-            5. Select a local model (tiny → large-v3) — downloads automatically on first use
+            5. Select a local model (tiny to large-v3) — downloads automatically on first use
             6. Or enter an OpenAI API key for cloud transcription
 
             ### GPU Support (Windows)
