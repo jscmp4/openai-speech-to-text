@@ -22,6 +22,56 @@
     text-align: center;
   }
 
+  /* Model Selector */
+  .model-section {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .model-section > label {
+    display: block;
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 8px;
+  }
+  .model-select {
+    width: 100%;
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 8px;
+    color: #e0e0e0;
+    padding: 10px 14px;
+    font-size: 14px;
+    outline: none;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+  }
+  .model-select:focus { border-color: #4a9eff; }
+  .model-select option { background: #1a1a1a; color: #e0e0e0; }
+  .model-hint {
+    font-size: 12px;
+    color: #555;
+    margin-top: 8px;
+  }
+  .device-badge {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    margin-top: 8px;
+    width: fit-content;
+    display: none;
+  }
+  .device-badge.cuda { background: #1a2a1a; color: #6c6; border: 1px solid #2a3a2a; }
+  .device-badge.cpu { background: #2a2a1a; color: #cc6; border: 1px solid #3a3a2a; }
+  .device-badge.pending { background: #1a1a2a; color: #88a; border: 1px solid #2a2a3a; }
+  .device-badge.cloud { background: #1a1a2a; color: #88f; border: 1px solid #2a2a3a; }
+
   /* API Key Section */
   .api-section {
     background: #1a1a1a;
@@ -69,6 +119,82 @@
     margin-top: 6px;
     display: none;
   }
+  .api-status {
+    font-size: 12px;
+    margin-top: 8px;
+    display: none;
+  }
+  .api-status.valid { display: block; color: #6c6; }
+  .api-status.invalid { display: block; color: #f66; }
+  .api-status.checking { display: block; color: #888; }
+
+  /* Correction Section */
+  .correction-section {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .correction-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .correction-header > label:first-child {
+    font-size: 13px;
+    color: #888;
+  }
+  .toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 44px;
+    height: 24px;
+    cursor: pointer;
+  }
+  .toggle-switch input { display: none; }
+  .toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: #333;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    left: 3px;
+    top: 3px;
+    background: #888;
+    border-radius: 50%;
+    transition: all 0.2s;
+  }
+  .toggle-switch input:checked + .toggle-slider { background: #4a9eff; }
+  .toggle-switch input:checked + .toggle-slider::before {
+    transform: translateX(20px);
+    background: #fff;
+  }
+  .correction-options {
+    display: none;
+    margin-top: 14px;
+  }
+  .correction-options label {
+    display: block;
+    font-size: 12px;
+    color: #666;
+    margin-bottom: 6px;
+  }
+  .correction-options .model-select {
+    width: 100%;
+  }
+  .correction-hint {
+    font-size: 12px;
+    color: #555;
+    margin-top: 8px;
+  }
 
   /* Upload Area */
   .upload-area {
@@ -88,31 +214,59 @@
   .upload-area.has-file {
     border-color: #4a9eff;
     border-style: solid;
-    padding: 30px 40px;
+    padding: 20px;
   }
   .upload-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.5; }
   .upload-text { font-size: 16px; color: #888; }
   .upload-text span { color: #4a9eff; }
   .upload-formats { font-size: 12px; color: #555; margin-top: 10px; }
-  .file-info {
-    display: none;
+
+  /* File List */
+  .file-list { text-align: left; }
+  .file-list-item {
+    display: flex;
     align-items: center;
-    gap: 14px;
-    text-align: left;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid #222;
   }
-  .file-info .file-icon { font-size: 32px; opacity: 0.6; }
-  .file-info .file-details { flex: 1; }
-  .file-info .file-name { font-size: 15px; color: #fff; word-break: break-all; }
-  .file-info .file-size { font-size: 13px; color: #666; margin-top: 2px; }
-  .file-info .file-remove {
+  .file-list-item:last-child { border-bottom: none; }
+  .file-list-item .fl-icon { font-size: 20px; opacity: 0.5; }
+  .file-list-item .fl-name {
+    flex: 1;
+    font-size: 13px;
+    color: #ccc;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .file-list-item .fl-size { font-size: 12px; color: #666; white-space: nowrap; }
+  .file-list-item .fl-status {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .fl-status.pending { background: #2a2a2a; color: #666; }
+  .fl-status.processing { background: #1a2a3a; color: #4a9eff; }
+  .fl-status.done { background: #1a2a1a; color: #4a4; }
+  .fl-status.error { background: #2a1515; color: #f66; }
+  .file-list-item .fl-remove {
     background: none;
     border: none;
-    color: #666;
-    font-size: 20px;
+    color: #555;
+    font-size: 18px;
     cursor: pointer;
-    padding: 4px 8px;
+    padding: 2px 6px;
+    line-height: 1;
   }
-  .file-info .file-remove:hover { color: #ff4444; }
+  .file-list-item .fl-remove:hover { color: #ff4444; }
+  .file-list-summary {
+    font-size: 12px;
+    color: #666;
+    margin-top: 8px;
+    text-align: right;
+  }
 
   /* Transcribe Button */
   .btn-transcribe {
@@ -160,6 +314,11 @@
     width: 0%;
   }
   .progress-text { font-size: 13px; color: #888; }
+  .progress-file {
+    font-size: 12px;
+    color: #4a9eff;
+    margin-bottom: 10px;
+  }
 
   /* Result */
   .result-area {
@@ -168,6 +327,7 @@
     border: 1px solid #2a2a2a;
     border-radius: 12px;
     overflow: hidden;
+    margin-bottom: 20px;
   }
   .result-tabs {
     display: flex;
@@ -206,7 +366,7 @@
     gap: 10px;
     justify-content: flex-end;
   }
-  .btn-copy, .btn-download {
+  .btn-action {
     padding: 8px 20px;
     border-radius: 8px;
     font-size: 13px;
@@ -215,7 +375,7 @@
     background: #222;
     color: #aaa;
   }
-  .btn-copy:hover, .btn-download:hover { background: #333; color: #fff; }
+  .btn-action:hover { background: #333; color: #fff; }
 
   /* Error */
   .error-msg {
@@ -234,38 +394,80 @@
 <div class="container">
   <h1>Speech to Text Transcription</h1>
 
+  <!-- Model Selector -->
+  <div class="model-section">
+    <label>Transcription Model</label>
+    <select class="model-select" id="modelSelect" onchange="onModelChange()">
+      <option value="openai">OpenAI API (gpt-4o-transcribe-diarize)</option>
+      <optgroup label="Local Models (faster-whisper)">
+        <option value="tiny">tiny - Fastest, lowest accuracy</option>
+        <option value="base">base - Fast, basic accuracy</option>
+        <option value="small">small - Balanced speed/accuracy</option>
+        <option value="medium">medium - Good accuracy, slower</option>
+        <option value="large-v3">large-v3 - Best accuracy, slowest</option>
+      </optgroup>
+    </select>
+    <div class="device-row" id="deviceRow" style="display:none; margin-top: 12px;">
+      <label style="font-size: 13px; color: #888; margin-bottom: 6px; display: block;">Device</label>
+      <select class="model-select" id="deviceSelect" onchange="onDeviceChange()" style="width: 200px;">
+        <option value="auto">Auto (GPU if available)</option>
+        <option value="cuda">GPU (CUDA)</option>
+        <option value="cpu">CPU</option>
+      </select>
+    </div>
+    <div class="model-hint" id="modelHint">Uses OpenAI API, requires API key. Supports speaker diarization.</div>
+    <div class="device-badge" id="deviceBadge"></div>
+  </div>
+
   <!-- API Key -->
-  <div class="api-section">
+  <div class="api-section" id="apiSection">
     <label>OpenAI API Key</label>
     <div class="api-row">
       <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
       <button onclick="toggleKeyVisibility()" id="toggleBtn">Show</button>
-      <button onclick="saveApiKey()">Save</button>
+      <button onclick="saveAndVerifyApiKey()">Save</button>
     </div>
     <div class="api-saved" id="apiSaved">API key saved to browser</div>
+    <div class="api-status" id="apiStatus"></div>
+  </div>
+
+  <!-- AI Correction -->
+  <div class="correction-section">
+    <div class="correction-header">
+      <label>AI Correction (post-processing)</label>
+      <label class="toggle-switch">
+        <input type="checkbox" id="correctionToggle" onchange="onCorrectionChange()">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    <div class="correction-options" id="correctionOptions">
+      <label>Correction Model</label>
+      <select class="model-select" id="correctionModel">
+        <option value="gpt-4.1-nano">gpt-4.1-nano - Cheapest, fast</option>
+        <option value="gpt-4.1-mini">gpt-4.1-mini - Good balance</option>
+        <option value="gpt-4.1">gpt-4.1 - Best quality</option>
+        <option value="gpt-4o-mini">gpt-4o-mini - Previous gen, cheap</option>
+        <option value="gpt-4o">gpt-4o - Previous gen, strong</option>
+      </select>
+      <div class="correction-hint">Uses OpenAI API to fix transcription errors based on context. Requires API key.</div>
+    </div>
   </div>
 
   <!-- Upload -->
   <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
     <div class="upload-default" id="uploadDefault">
       <div class="upload-icon">&#x1F3A4;</div>
-      <div class="upload-text">Drop your audio/video file here or <span>browse</span></div>
+      <div class="upload-text">Drop audio/video files here or <span>browse</span></div>
       <div class="upload-formats">MP3, MP4, MOV, M4A, WAV, WEBM, AVI, MKV, FLAC, OGG, AAC, WMA</div>
     </div>
-    <div class="file-info" id="fileInfo">
-      <div class="file-icon">&#x1F3B5;</div>
-      <div class="file-details">
-        <div class="file-name" id="fileName"></div>
-        <div class="file-size" id="fileSize"></div>
-      </div>
-      <button class="file-remove" onclick="removeFile(event)">&times;</button>
-    </div>
+    <div class="file-list" id="fileList" style="display:none"></div>
+    <div class="file-list-summary" id="fileSummary" style="display:none"></div>
   </div>
-  <input type="file" id="fileInput" hidden
+  <input type="file" id="fileInput" hidden multiple
     accept=".mp3,.mp4,.mpeg,.mpga,.m4a,.wav,.webm,.mov,.avi,.mkv,.flac,.ogg,.aac,.wma">
 
   <!-- Transcribe -->
-  <button class="btn-transcribe" id="btnTranscribe" onclick="startTranscribe()" disabled>
+  <button class="btn-transcribe" id="btnTranscribe" onclick="startBatchTranscribe()" disabled>
     Start Transcription
   </button>
 
@@ -274,6 +476,7 @@
 
   <!-- Progress -->
   <div class="progress-area" id="progressArea">
+    <div class="progress-file" id="progressFile"></div>
     <div class="progress-bar-bg"><div class="progress-bar" id="progressBar"></div></div>
     <div class="progress-text" id="progressText">Uploading and processing...</div>
   </div>
@@ -291,80 +494,212 @@
       <pre id="resultJson" style="display:none"></pre>
     </div>
     <div class="result-actions">
-      <button class="btn-copy" onclick="copyResult()">Copy</button>
-      <button class="btn-download" onclick="downloadResult()">Download .txt</button>
+      <button class="btn-action" onclick="copyResult()">Copy</button>
+      <button class="btn-action" onclick="downloadResult()">Download .txt</button>
+      <button class="btn-action" id="btnDownloadAll" onclick="downloadAllResults()" style="display:none">Download All .txt</button>
     </div>
   </div>
 </div>
 
 <script>
-let selectedFile = null;
+let selectedFiles = [];
 let currentTab = 'formatted';
 let resultData = {};
+let allResults = []; // for batch: [{name, formatted, full_text, segments}]
 
-// Load saved API key
+// Load saved settings
 window.addEventListener('DOMContentLoaded', () => {
   const saved = localStorage.getItem('openai_api_key');
   if (saved) document.getElementById('apiKey').value = saved;
+  const savedModel = localStorage.getItem('stt_model');
+  if (savedModel) document.getElementById('modelSelect').value = savedModel;
+  const savedCorrection = localStorage.getItem('stt_correction');
+  if (savedCorrection === '1') document.getElementById('correctionToggle').checked = true;
+  const savedCorrModel = localStorage.getItem('stt_correction_model');
+  if (savedCorrModel) document.getElementById('correctionModel').value = savedCorrModel;
+  const savedDevice = localStorage.getItem('stt_device');
+  if (savedDevice) document.getElementById('deviceSelect').value = savedDevice;
+  onModelChange();
+  onCorrectionChange();
+  // Auto-verify saved key on load
+  const apiKey = document.getElementById('apiKey').value.trim();
+  if (apiKey) verifyApiKey(apiKey);
 });
 
-function saveApiKey() {
-  const key = document.getElementById('apiKey').value.trim();
-  if (key) {
-    localStorage.setItem('openai_api_key', key);
-    const el = document.getElementById('apiSaved');
-    el.style.display = 'block';
-    setTimeout(() => el.style.display = 'none', 2000);
+function onModelChange() {
+  const model = document.getElementById('modelSelect').value;
+  const hint = document.getElementById('modelHint');
+  const badge = document.getElementById('deviceBadge');
+  const deviceRow = document.getElementById('deviceRow');
+  localStorage.setItem('stt_model', model);
+  if (model === 'openai') {
+    hint.textContent = 'Uses OpenAI API, requires API key. Supports speaker diarization.';
+    badge.className = 'device-badge cloud';
+    badge.style.display = 'block';
+    badge.textContent = 'Cloud API';
+    deviceRow.style.display = 'none';
+  } else {
+    hint.textContent = `Local model "${model}" runs on your machine. No API key needed. First use will download the model.`;
+    deviceRow.style.display = 'block';
+    fetchDeviceStatus(model);
   }
+  updateTranscribeBtn();
+}
+
+function onDeviceChange() {
+  localStorage.setItem('stt_device', document.getElementById('deviceSelect').value);
+}
+
+function fetchDeviceStatus(model) {
+  const badge = document.getElementById('deviceBadge');
+  // Show pending immediately
+  badge.className = 'device-badge pending';
+  badge.style.display = 'block';
+  badge.textContent = 'Checking device...';
+  fetch('/api/status').then(r => r.json()).then(data => {
+    const device = data.loaded_models[model];
+    if (device) {
+      setDeviceBadge(device);
+    } else {
+      // Model not loaded yet, show expected device
+      const expected = data.cuda_available ? 'cuda' : 'cpu';
+      badge.className = 'device-badge ' + expected;
+      badge.style.display = 'block';
+      badge.textContent = (expected === 'cuda' ? 'GPU (CUDA)' : 'CPU') + ' - will load on first use';
+    }
+  }).catch(() => {
+    badge.className = 'device-badge pending';
+    badge.style.display = 'block';
+    badge.textContent = 'Device: auto-detect on first use';
+  });
+}
+
+function setDeviceBadge(device) {
+  const badge = document.getElementById('deviceBadge');
+  badge.className = 'device-badge ' + device;
+  badge.style.display = 'block';
+  badge.textContent = device === 'cuda' ? 'GPU (CUDA)' : 'CPU';
+}
+
+function onCorrectionChange() {
+  const enabled = document.getElementById('correctionToggle').checked;
+  document.getElementById('correctionOptions').style.display = enabled ? 'block' : 'none';
+  localStorage.setItem('stt_correction', enabled ? '1' : '0');
+}
+
+function updateTranscribeBtn() {
+  document.getElementById('btnTranscribe').disabled = selectedFiles.length === 0;
+}
+
+function saveAndVerifyApiKey() {
+  const key = document.getElementById('apiKey').value.trim();
+  if (!key) return;
+  localStorage.setItem('openai_api_key', key);
+  const el = document.getElementById('apiSaved');
+  el.style.display = 'block';
+  setTimeout(() => el.style.display = 'none', 2000);
+  verifyApiKey(key);
+}
+
+function verifyApiKey(key) {
+  const status = document.getElementById('apiStatus');
+  if (!key) { status.className = 'api-status'; return; }
+  status.className = 'api-status checking';
+  status.textContent = 'Verifying...';
+  fetch('/api/verify-key', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({api_key: key}),
+  }).then(r => r.json()).then(data => {
+    if (data.valid) {
+      status.className = 'api-status valid';
+      status.textContent = 'API key verified';
+    } else {
+      status.className = 'api-status invalid';
+      status.textContent = 'Invalid API key: ' + (data.error || 'unknown error');
+    }
+  }).catch(() => {
+    status.className = 'api-status invalid';
+    status.textContent = 'Could not verify key';
+  });
 }
 
 function toggleKeyVisibility() {
   const input = document.getElementById('apiKey');
   const btn = document.getElementById('toggleBtn');
-  if (input.type === 'password') {
-    input.type = 'text';
-    btn.textContent = 'Hide';
-  } else {
-    input.type = 'password';
-    btn.textContent = 'Show';
-  }
+  if (input.type === 'password') { input.type = 'text'; btn.textContent = 'Hide'; }
+  else { input.type = 'password'; btn.textContent = 'Show'; }
 }
 
 // Drag and drop
 const uploadArea = document.getElementById('uploadArea');
-uploadArea.addEventListener('dragover', e => {
-  e.preventDefault();
-  uploadArea.classList.add('dragover');
-});
+uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('dragover'); });
 uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
 uploadArea.addEventListener('drop', e => {
   e.preventDefault();
   uploadArea.classList.remove('dragover');
-  if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+  addFiles(e.dataTransfer.files);
 });
 
 document.getElementById('fileInput').addEventListener('change', e => {
-  if (e.target.files.length) setFile(e.target.files[0]);
+  addFiles(e.target.files);
+  e.target.value = '';
 });
 
-function setFile(file) {
-  selectedFile = file;
-  document.getElementById('fileName').textContent = file.name;
-  document.getElementById('fileSize').textContent = formatSize(file.size);
-  document.getElementById('uploadDefault').style.display = 'none';
-  document.getElementById('fileInfo').style.display = 'flex';
-  uploadArea.classList.add('has-file');
-  document.getElementById('btnTranscribe').disabled = false;
+function addFiles(fileList) {
+  for (const f of fileList) {
+    if (!selectedFiles.some(e => e.name === f.name && e.size === f.size)) {
+      selectedFiles.push(f);
+    }
+  }
+  renderFileList();
+  updateTranscribeBtn();
 }
 
-function removeFile(e) {
-  e.stopPropagation();
-  selectedFile = null;
-  document.getElementById('fileInput').value = '';
-  document.getElementById('uploadDefault').style.display = '';
-  document.getElementById('fileInfo').style.display = 'none';
-  uploadArea.classList.remove('has-file');
-  document.getElementById('btnTranscribe').disabled = true;
+function removeFileAt(idx, e) {
+  if (e) e.stopPropagation();
+  selectedFiles.splice(idx, 1);
+  renderFileList();
+  updateTranscribeBtn();
+}
+
+function renderFileList() {
+  const listEl = document.getElementById('fileList');
+  const summaryEl = document.getElementById('fileSummary');
+  const defaultEl = document.getElementById('uploadDefault');
+
+  if (selectedFiles.length === 0) {
+    listEl.style.display = 'none';
+    summaryEl.style.display = 'none';
+    defaultEl.style.display = '';
+    uploadArea.classList.remove('has-file');
+    return;
+  }
+
+  defaultEl.style.display = 'none';
+  listEl.style.display = 'block';
+  summaryEl.style.display = 'block';
+  uploadArea.classList.add('has-file');
+
+  listEl.innerHTML = selectedFiles.map((f, i) => `
+    <div class="file-list-item" data-idx="${i}">
+      <span class="fl-icon">&#x1F3B5;</span>
+      <span class="fl-name" title="${f.name}">${f.name}</span>
+      <span class="fl-size">${formatSize(f.size)}</span>
+      <span class="fl-status pending" id="fstatus_${i}">pending</span>
+      <button class="fl-remove" onclick="removeFileAt(${i}, event)">&times;</button>
+    </div>
+  `).join('');
+
+  const totalSize = selectedFiles.reduce((s, f) => s + f.size, 0);
+  summaryEl.textContent = `${selectedFiles.length} file(s) - ${formatSize(totalSize)} total`;
+}
+
+function setFileStatus(idx, status, label) {
+  const el = document.getElementById('fstatus_' + idx);
+  if (!el) return;
+  el.className = 'fl-status ' + status;
+  el.textContent = label || status;
 }
 
 function formatSize(bytes) {
@@ -374,64 +709,165 @@ function formatSize(bytes) {
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 }
 
-async function startTranscribe() {
+async function startBatchTranscribe() {
+  const model = document.getElementById('modelSelect').value;
   const apiKey = document.getElementById('apiKey').value.trim();
-  if (!apiKey) { showError('Please enter your OpenAI API key'); return; }
-  if (!selectedFile) { showError('Please select a file'); return; }
+  const correctionOn = document.getElementById('correctionToggle').checked;
+  const correctionModel = document.getElementById('correctionModel').value;
+  const needsKey = model === 'openai' || correctionOn;
+  if (needsKey && !apiKey) { showError('Please enter your OpenAI API key'); return; }
+  if (selectedFiles.length === 0) { showError('Please select file(s)'); return; }
 
-  localStorage.setItem('openai_api_key', apiKey);
+  if (apiKey) localStorage.setItem('openai_api_key', apiKey);
+  localStorage.setItem('stt_correction_model', correctionModel);
 
   hideError();
+  allResults = [];
+  resultData = {};
   document.getElementById('resultArea').style.display = 'none';
+  document.getElementById('resultFormatted').textContent = '';
+  document.getElementById('resultPlain').textContent = '';
+  document.getElementById('resultJson').textContent = '';
   document.getElementById('progressArea').style.display = 'block';
   document.getElementById('btnTranscribe').disabled = true;
   document.getElementById('btnTranscribe').textContent = 'Processing...';
-  setProgress(2, 'Uploading file...');
+  // Disable remove buttons during processing
+  document.querySelectorAll('.fl-remove').forEach(b => b.style.display = 'none');
 
-  const formData = new FormData();
-  formData.append('file', selectedFile);
-  formData.append('api_key', apiKey);
+  const totalFiles = selectedFiles.length;
 
-  try {
-    const response = await fetch('/transcribe', { method: 'POST', body: formData });
+  for (let fi = 0; fi < totalFiles; fi++) {
+    const file = selectedFiles[fi];
+    setFileStatus(fi, 'processing', 'processing...');
+    document.getElementById('progressFile').textContent = `File ${fi + 1}/${totalFiles}: ${file.name}`;
+    setProgress(0, 'Uploading file...');
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    let streamingSegments = [];
+    let streamingLines = [];
+    let fileResult = null;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('model_type', model);
+    if (model !== 'openai') formData.append('device', document.getElementById('deviceSelect').value);
+    if (needsKey) formData.append('api_key', apiKey);
+    if (correctionOn) {
+      formData.append('correction', '1');
+      formData.append('correction_model', correctionModel);
+    }
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop(); // keep incomplete line
+    try {
+      const response = await fetch('/transcribe', { method: 'POST', body: formData });
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
 
-      let eventType = '';
-      for (const line of lines) {
-        if (line.startsWith('event: ')) {
-          eventType = line.slice(7).trim();
-        } else if (line.startsWith('data: ') && eventType) {
-          const data = JSON.parse(line.slice(6));
-          if (eventType === 'progress') {
-            setProgress(data.pct, data.msg);
-          } else if (eventType === 'result') {
-            resultData = data;
-            showResult(data);
-          } else if (eventType === 'error') {
-            throw new Error(data.error);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith('data: ') && eventType) {
+            const data = JSON.parse(line.slice(6));
+            if (eventType === 'status') {
+              setDeviceBadge(data.device);
+            } else if (eventType === 'progress') {
+              setProgress(data.pct, data.msg);
+            } else if (eventType === 'segment') {
+              streamingSegments.push(data.segment);
+              streamingLines.push(data.line);
+              setProgress(data.pct, `Transcribing... ${streamingSegments.length} segments | ${data.elapsed} / ${data.total}`);
+              // Live preview
+              showLiveResult(file.name, fi, totalFiles, streamingLines, streamingSegments);
+            } else if (eventType === 'result') {
+              fileResult = data;
+            } else if (eventType === 'error') {
+              throw new Error(data.error);
+            }
+            eventType = '';
           }
-          eventType = '';
         }
       }
+
+      // Use final result if available, else fallback to streaming data
+      const res = fileResult || {
+        formatted: streamingLines.join('\n\n'),
+        full_text: streamingSegments.map(s => s.text).join(' '),
+        segments: streamingSegments,
+      };
+      allResults.push({ name: file.name, ...res });
+      setFileStatus(fi, 'done', 'done');
+
+    } catch (err) {
+      // Save whatever we got
+      if (streamingSegments.length > 0) {
+        allResults.push({
+          name: file.name,
+          formatted: streamingLines.join('\n\n'),
+          full_text: streamingSegments.map(s => s.text).join(' '),
+          segments: streamingSegments,
+          error: err.message,
+        });
+      }
+      setFileStatus(fi, 'error', 'error');
+      showError(`${file.name}: ${err.message}`);
     }
-  } catch (err) {
-    showError(err.message);
-  } finally {
-    document.getElementById('progressArea').style.display = 'none';
-    document.getElementById('btnTranscribe').disabled = false;
-    document.getElementById('btnTranscribe').textContent = 'Start Transcription';
   }
+
+  // Show combined results
+  showCombinedResults();
+  document.getElementById('progressArea').style.display = 'none';
+  document.getElementById('btnTranscribe').disabled = false;
+  document.getElementById('btnTranscribe').textContent = 'Start Transcription';
+  document.querySelectorAll('.fl-remove').forEach(b => b.style.display = '');
+}
+
+function showLiveResult(fileName, fileIdx, totalFiles, lines, segments) {
+  // Build combined view of completed results + current streaming
+  let formatted = '';
+  let plain = '';
+  for (const r of allResults) {
+    formatted += `=== ${r.name} ===\n\n${r.formatted}\n\n`;
+    plain += r.full_text + '\n\n';
+  }
+  formatted += `=== ${fileName} ===\n\n${lines.join('\n\n')}`;
+  plain += segments.map(s => s.text).join(' ');
+
+  document.getElementById('resultArea').style.display = 'block';
+  document.getElementById('resultFormatted').textContent = formatted.trim();
+  document.getElementById('resultPlain').textContent = plain.trim();
+  const content = document.querySelector('.result-content');
+  content.scrollTop = content.scrollHeight;
+}
+
+function showCombinedResults() {
+  if (allResults.length === 0) return;
+
+  let formatted, plain, segments;
+  if (allResults.length === 1) {
+    formatted = allResults[0].formatted;
+    plain = allResults[0].full_text;
+    segments = allResults[0].segments;
+    document.getElementById('btnDownloadAll').style.display = 'none';
+  } else {
+    formatted = allResults.map(r => `=== ${r.name} ===\n\n${r.formatted}`).join('\n\n\n');
+    plain = allResults.map(r => `=== ${r.name} ===\n\n${r.full_text}`).join('\n\n\n');
+    segments = allResults.map(r => ({ file: r.name, segments: r.segments }));
+    document.getElementById('btnDownloadAll').style.display = '';
+  }
+
+  resultData = { success: true, formatted, full_text: plain, segments };
+  document.getElementById('resultFormatted').textContent = formatted;
+  document.getElementById('resultPlain').textContent = plain;
+  document.getElementById('resultJson').textContent = JSON.stringify(segments, null, 2);
+  document.getElementById('resultArea').style.display = 'block';
+  switchTab('formatted');
 }
 
 function setProgress(pct, text) {
@@ -449,21 +885,12 @@ function hideError() {
   document.getElementById('errorMsg').style.display = 'none';
 }
 
-function showResult(data) {
-  document.getElementById('resultFormatted').textContent = data.formatted;
-  document.getElementById('resultPlain').textContent = data.full_text;
-  document.getElementById('resultJson').textContent = JSON.stringify(data.segments, null, 2);
-  document.getElementById('resultArea').style.display = 'block';
-  switchTab('formatted');
-}
-
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.result-tab').forEach(el => el.classList.remove('active'));
   document.getElementById('resultFormatted').style.display = tab === 'formatted' ? '' : 'none';
   document.getElementById('resultPlain').style.display = tab === 'plain' ? '' : 'none';
   document.getElementById('resultJson').style.display = tab === 'json' ? '' : 'none';
-
   const tabs = document.querySelectorAll('.result-tab');
   if (tab === 'formatted') tabs[0].classList.add('active');
   else if (tab === 'plain') tabs[1].classList.add('active');
@@ -475,25 +902,34 @@ function copyResult() {
   if (currentTab === 'formatted') text = resultData.formatted;
   else if (currentTab === 'plain') text = resultData.full_text;
   else text = JSON.stringify(resultData.segments, null, 2);
-
   navigator.clipboard.writeText(text).then(() => {
-    const btn = document.querySelector('.btn-copy');
+    const btn = event.target;
     btn.textContent = 'Copied!';
     setTimeout(() => btn.textContent = 'Copy', 1500);
   });
 }
 
 function downloadResult() {
-  let text = '';
-  let ext = '.txt';
+  let text = '', ext = '.txt';
   if (currentTab === 'formatted') text = resultData.formatted;
   else if (currentTab === 'plain') text = resultData.full_text;
   else { text = JSON.stringify(resultData.segments, null, 2); ext = '.json'; }
+  downloadBlob(text, 'transcription' + ext);
+}
 
+function downloadAllResults() {
+  // Download each file's result separately
+  for (const r of allResults) {
+    const baseName = r.name.replace(/\.[^.]+$/, '');
+    downloadBlob(r.formatted, baseName + '_transcription.txt');
+  }
+}
+
+function downloadBlob(text, filename) {
   const blob = new Blob([text], { type: 'text/plain' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'transcription' + ext;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(a.href);
 }

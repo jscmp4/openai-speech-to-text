@@ -3,11 +3,77 @@ import json
 import math
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 from flask import Flask, render_template, request, jsonify, Response
 from openai import OpenAI
+
+# Register NVIDIA DLL directories on Windows (needed for CUDA libraries from pip packages)
+if sys.platform == "win32":
+    _dll_dirs = []
+    for pkg in ["cublas", "cudnn"]:
+        dll_dir = os.path.join(sys.prefix, "Lib", "site-packages", "nvidia", pkg, "bin")
+        if not os.path.isdir(dll_dir):
+            dll_dir = os.path.join(os.path.expanduser("~"), "AppData", "Roaming",
+                                   "Python", f"Python{sys.version_info.major}{sys.version_info.minor}",
+                                   "site-packages", "nvidia", pkg, "bin")
+        if os.path.isdir(dll_dir):
+            _dll_dirs.append(dll_dir)
+            os.add_dll_directory(dll_dir)
+    if _dll_dirs:
+        os.environ["PATH"] = os.pathsep.join(_dll_dirs) + os.pathsep + os.environ.get("PATH", "")
+        print(f"  Added NVIDIA DLL dirs to PATH: {_dll_dirs}")
+
+# Local model support (lazy loaded)
+_whisper_models = {}
+_model_devices = {}  # model_name -> "cuda" or "cpu"
+_cuda_available = None  # None = not checked, True/False after check
+
+LOCAL_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
+CORRECTION_MODELS = ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o"]
+
+
+def check_cuda():
+    """Check if CUDA is available for CTranslate2/faster-whisper."""
+    global _cuda_available
+    if _cuda_available is not None:
+        return _cuda_available
+    try:
+        import ctranslate2
+        _cuda_available = "cuda" in ctranslate2.get_supported_compute_types("cuda")
+        if _cuda_available:
+            print("  CUDA is available")
+    except Exception as e:
+        _cuda_available = False
+        print(f"  CUDA not available: {e}")
+    return _cuda_available
+
+
+def get_whisper_model(model_name, preferred_device=None):
+    """Lazy-load a faster-whisper model. Auto-detect CUDA with fallback."""
+    cache_key = f"{model_name}_{preferred_device or 'auto'}"
+    if cache_key not in _whisper_models:
+        from faster_whisper import WhisperModel
+        if preferred_device == "cpu":
+            devices = [("cpu", "int8")]
+        elif preferred_device == "cuda":
+            devices = [("cuda", "float16")]
+        else:
+            devices = [("cuda", "float16"), ("cpu", "int8")]
+        for device, ct in devices:
+            try:
+                model = WhisperModel(model_name, device=device, compute_type=ct)
+                _whisper_models[cache_key] = model
+                _model_devices[cache_key] = device
+                print(f"  Loaded {model_name} on {device} ({ct})")
+                break
+            except Exception as e:
+                if device == devices[-1][0]:
+                    raise
+                print(f"  {device} failed ({e}), trying next...")
+    return _whisper_models[cache_key], _model_devices[cache_key]
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024  # 2GB upload limit
@@ -108,6 +174,21 @@ def transcribe_chunk(client, chunk_path, chunk_offset_sec):
     return segments
 
 
+def transcribe_local_streaming(model, chunk_path, chunk_offset_sec):
+    """Yield segments one by one from a local faster-whisper model (generator)."""
+    segments_out, info = model.transcribe(
+        chunk_path, beam_size=1, vad_filter=True, word_timestamps=False,
+    )
+    print(f"  Transcribing: language={info.language}, probability={info.language_probability:.2f}, duration={info.duration:.1f}s")
+    for seg in segments_out:
+        yield {
+            "speaker": "speaker",
+            "text": seg.text.strip(),
+            "start": round(seg.start + chunk_offset_sec, 2),
+            "end": round(seg.end + chunk_offset_sec, 2),
+        }
+
+
 def format_timestamp(seconds):
     """Format seconds to HH:MM:SS.ss"""
     h = int(seconds // 3600)
@@ -132,6 +213,41 @@ def merge_segments(all_segments):
     return merged
 
 
+CORRECTION_BATCH_SIZE = 30  # segments per batch
+
+
+def correct_segments_batch(client, segments, model, batch_idx, total_batches):
+    """Send a batch of segments to GPT for contextual correction. Returns corrected texts."""
+    numbered = "\n".join(
+        f"{i}: {seg['text']}" for i, seg in enumerate(segments)
+    )
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": (
+                "You are a transcription corrector. You receive numbered lines of speech-to-text output. "
+                "Fix obvious transcription errors, wrong words, homophones, and punctuation based on context. "
+                "Keep the original language. Do NOT add, remove, or reorder lines. "
+                "Do NOT translate. Do NOT add explanations. "
+                "Output ONLY the corrected numbered lines in the exact same format: 'number: corrected text'"
+            )},
+            {"role": "user", "content": numbered},
+        ],
+        temperature=0.3,
+    )
+    corrected = {}
+    for line in resp.choices[0].message.content.strip().split("\n"):
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        idx_str, text = line.split(":", 1)
+        try:
+            corrected[int(idx_str.strip())] = text.strip()
+        except ValueError:
+            continue
+    return corrected
+
+
 def sse_event(event, data):
     """Format a Server-Sent Event."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
@@ -140,6 +256,38 @@ def sse_event(event, data):
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/local-models")
+def list_local_models():
+    return jsonify({"models": LOCAL_MODELS})
+
+
+@app.route("/api/verify-key", methods=["POST"])
+def verify_key():
+    """Quick check if an OpenAI API key is valid."""
+    data = request.get_json(silent=True) or {}
+    api_key = data.get("api_key", "").strip()
+    if not api_key:
+        return jsonify({"valid": False, "error": "No key provided"})
+    try:
+        client = OpenAI(api_key=api_key)
+        client.models.list()
+        return jsonify({"valid": True})
+    except Exception as e:
+        return jsonify({"valid": False, "error": str(e)})
+
+
+@app.route("/api/status")
+def api_status():
+    """Return loaded models and their device info, plus CUDA availability."""
+    cuda = check_cuda()
+    return jsonify({
+        "loaded_models": {name: _model_devices.get(name, "unknown") for name in _whisper_models},
+        "available_models": LOCAL_MODELS,
+        "cuda_available": cuda,
+        "default_device": "cuda" if cuda else "cpu",
+    })
 
 
 @app.route("/transcribe", methods=["POST"])
@@ -151,10 +299,24 @@ def transcribe():
     if not file.filename or not allowed_file(file.filename):
         return jsonify({"error": f"Unsupported file format. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"}), 400
 
+    model_type = request.form.get("model_type", "openai").strip()
+    use_local = model_type in LOCAL_MODELS
+    preferred_device = request.form.get("device", "auto").strip()
+    if preferred_device not in ("cuda", "cpu", "auto"):
+        preferred_device = "auto"
+
+    # Correction settings
+    correction_enabled = request.form.get("correction", "").strip() == "1"
+    correction_model = request.form.get("correction_model", "gpt-4.1-nano").strip()
+    if correction_model not in CORRECTION_MODELS:
+        correction_model = "gpt-4.1-nano"
+
     api_key = request.form.get("api_key", "").strip()
     if not api_key:
         api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
+
+    needs_api = not use_local or correction_enabled
+    if needs_api and not api_key:
         return jsonify({"error": "Please provide an OpenAI API key"}), 400
 
     # Save file and prep before streaming
@@ -165,39 +327,118 @@ def transcribe():
 
     def generate():
         try:
-            client = OpenAI(api_key=api_key)
+            client = None
+            local_model = None
+            if use_local:
+                device_label = preferred_device if preferred_device != "auto" else "auto-detect"
+                yield sse_event("progress", {"step": "load_model", "pct": 3, "msg": f"Loading local model ({model_type}) on {device_label}..."})
+                try:
+                    local_model, device = get_whisper_model(model_type, preferred_device if preferred_device != "auto" else None)
+                except Exception as e:
+                    yield sse_event("error", {"error": f"Failed to load model '{model_type}': {e}"})
+                    return
+                yield sse_event("status", {"device": device, "model": model_type})
+            else:
+                client = OpenAI(api_key=api_key)
 
             # Step 1: Extract audio
             yield sse_event("progress", {"step": "extract", "pct": 5, "msg": "Extracting audio..."})
             audio_path = os.path.join(tmp_dir, "audio.mp3")
             extract_audio(input_path, audio_path)
 
-            # Step 2: Split
-            yield sse_event("progress", {"step": "split", "pct": 15, "msg": "Splitting into chunks..."})
-            chunks = split_audio(audio_path, tmp_dir)
-            total = len(chunks)
-            yield sse_event("progress", {"step": "split_done", "pct": 20, "msg": f"Split into {total} chunk(s). Starting transcription..."})
+            # Step 2: Split (only needed for OpenAI due to size limits)
+            if use_local:
+                chunks = [audio_path]
+                total = 1
+                yield sse_event("progress", {"step": "split_done", "pct": 20, "msg": "Starting transcription..."})
+            else:
+                yield sse_event("progress", {"step": "split", "pct": 15, "msg": "Splitting into chunks..."})
+                chunks = split_audio(audio_path, tmp_dir)
+                total = len(chunks)
+                yield sse_event("progress", {"step": "split_done", "pct": 20, "msg": f"Split into {total} chunk(s). Starting transcription..."})
 
-            # Step 3: Transcribe each chunk
+            # Step 3: Transcribe
             all_segments = []
             offset = 0.0
-            for i, chunk_path in enumerate(chunks):
-                chunk_duration = get_duration(chunk_path)
-                pct = 20 + int((i / total) * 70)
-                yield sse_event("progress", {
-                    "step": "transcribe",
-                    "pct": pct,
-                    "msg": f"Transcribing chunk {i + 1}/{total}...",
-                    "chunk": i + 1,
-                    "total": total,
-                })
-                segments = transcribe_chunk(client, chunk_path, offset)
-                all_segments.extend(segments)
-                offset += chunk_duration
+
+            if use_local:
+                # Stream segments in real-time for local models
+                audio_duration = get_duration(audio_path)
+                yield sse_event("progress", {"step": "transcribe", "pct": 20, "msg": "Transcribing..."})
+                seg_count = 0
+                for seg in transcribe_local_streaming(local_model, audio_path, 0.0):
+                    all_segments.append(seg)
+                    seg_count += 1
+                    # Estimate progress based on timestamp vs total duration
+                    pct = min(90, 20 + int((seg["end"] / max(audio_duration, 1)) * 70))
+                    ts = f"[{format_timestamp(seg['start'])} -> {format_timestamp(seg['end'])}]"
+                    line = f"{ts}  {seg['speaker']}: {seg['text']}"
+                    yield sse_event("segment", {
+                        "segment": seg,
+                        "line": line,
+                        "pct": pct,
+                        "elapsed": format_timestamp(seg["end"]),
+                        "total": format_timestamp(audio_duration),
+                    })
+            else:
+                # OpenAI: chunk-based, stream segments as each chunk completes
+                audio_duration = get_duration(audio_path)
+                for i, chunk_path in enumerate(chunks):
+                    chunk_duration = get_duration(chunk_path)
+                    pct = 20 + int((i / total) * 70)
+                    yield sse_event("progress", {
+                        "step": "transcribe",
+                        "pct": pct,
+                        "msg": f"Transcribing chunk {i + 1}/{total}...",
+                        "chunk": i + 1,
+                        "total": total,
+                    })
+                    segments = transcribe_chunk(client, chunk_path, offset)
+                    all_segments.extend(segments)
+                    # Emit each segment from this chunk immediately
+                    done_pct = 20 + int(((i + 1) / total) * 70)
+                    for seg in segments:
+                        ts = f"[{format_timestamp(seg['start'])} -> {format_timestamp(seg['end'])}]"
+                        line = f"{ts}  {seg['speaker']}: {seg['text']}"
+                        yield sse_event("segment", {
+                            "segment": seg,
+                            "line": line,
+                            "pct": done_pct,
+                            "elapsed": format_timestamp(seg["end"]),
+                            "total": format_timestamp(audio_duration),
+                        })
+                    offset += chunk_duration
 
             # Step 4: Merge
-            yield sse_event("progress", {"step": "merge", "pct": 92, "msg": "Merging results..."})
+            merge_pct = 85 if correction_enabled else 92
+            yield sse_event("progress", {"step": "merge", "pct": merge_pct, "msg": "Merging results..."})
             merged = merge_segments(all_segments)
+
+            # Step 5: AI Correction (optional)
+            if correction_enabled and merged:
+                correction_client = client if client else OpenAI(api_key=api_key)
+                total_segs = len(merged)
+                num_batches = math.ceil(total_segs / CORRECTION_BATCH_SIZE)
+                yield sse_event("progress", {
+                    "step": "correct", "pct": 87,
+                    "msg": f"AI correcting with {correction_model} (0/{num_batches} batches)...",
+                })
+                for b in range(num_batches):
+                    start_i = b * CORRECTION_BATCH_SIZE
+                    end_i = min(start_i + CORRECTION_BATCH_SIZE, total_segs)
+                    batch = merged[start_i:end_i]
+                    corrected = correct_segments_batch(
+                        correction_client, batch, correction_model, b, num_batches
+                    )
+                    for local_idx, new_text in corrected.items():
+                        global_idx = start_i + local_idx
+                        if 0 <= global_idx < total_segs:
+                            merged[global_idx]["text"] = new_text
+                    pct = 87 + int(((b + 1) / num_batches) * 10)
+                    yield sse_event("progress", {
+                        "step": "correct", "pct": pct,
+                        "msg": f"AI correcting with {correction_model} ({b + 1}/{num_batches} batches)...",
+                    })
 
             # Build output
             lines = []
@@ -215,7 +456,7 @@ def transcribe():
                 "formatted": "\n\n".join(lines),
                 "full_text": " ".join(full_text),
                 "segments": merged,
-                "chunk_count": total,
+                "chunk_count": total if not use_local else 1,
             })
 
         except Exception as e:
