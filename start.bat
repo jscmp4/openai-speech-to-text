@@ -9,12 +9,6 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: Kill any old process on port 8080
-for /f "tokens=5" %%a in ('netstat -ano -p TCP ^| findstr ":8080.*LISTENING"') do (
-    echo Closing old instance (PID %%a)...
-    taskkill /F /PID %%a >nul 2>&1
-)
-
 if not exist "venv" (
     echo Creating virtual environment...
     python -m venv venv
