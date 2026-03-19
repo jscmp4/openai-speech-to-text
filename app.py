@@ -799,9 +799,37 @@ def cleanup_temp_files():
             pass
 
 
+def _kill_port(port):
+    """Kill any process occupying the given port (Windows only)."""
+    if sys.platform != "win32":
+        return
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.splitlines():
+            # Match lines like "  TCP    127.0.0.1:8080    ...    LISTENING    12345"
+            parts = line.split()
+            if len(parts) >= 5 and f":{port}" in parts[1] and parts[3] == "LISTENING":
+                pid = int(parts[4])
+                if pid == os.getpid():
+                    continue
+                print(f"  Killing old process on port {port} (PID {pid})...")
+                subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                               capture_output=True, timeout=5)
+    except Exception as e:
+        print(f"  Port cleanup note: {e}")
+
+
 if __name__ == "__main__":
     import signal
     import atexit
+
+    port = int(os.environ.get("PORT", 8080))
+
+    # Kill any old process still holding the port
+    _kill_port(port)
 
     # Clean up leftover temp files from previous runs
     cleanup_temp_files()
@@ -817,6 +845,5 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
 
-    port = int(os.environ.get("PORT", 8080))
     print(f"\n  Speech-to-Text is running at: http://localhost:{port}\n")
     app.run(host="127.0.0.1", port=port, debug=False)
