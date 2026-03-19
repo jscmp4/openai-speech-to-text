@@ -59,6 +59,29 @@ _cuda_available = None  # None = not checked, True/False after check
 LOCAL_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 CORRECTION_MODELS = ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o"]
 
+# OpenRouter-compatible correction models (sorted cheap to quality)
+OPENROUTER_CORRECTION_MODELS = [
+    "qwen/qwen3-30b-a3b",
+    "qwen/qwen3.5-9b",
+    "openai/gpt-4.1-nano",
+    "google/gemini-2.0-flash-001",
+    "qwen/qwen-2.5-72b-instruct",
+    "openai/gpt-4o-mini",
+    "deepseek/deepseek-chat-v3-0324",
+    "google/gemini-2.5-flash",
+    "openai/gpt-4.1-mini",
+    "openai/gpt-4.1",
+]
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+def _make_client(api_key, provider="openai"):
+    """Create an OpenAI-compatible client for the given provider."""
+    if provider == "openrouter":
+        return OpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL)
+    return OpenAI(api_key=api_key)
+
 
 def check_cuda():
     """Check if CUDA is available for CTranslate2/faster-whisper."""
@@ -340,13 +363,14 @@ def list_local_models():
 
 @app.route("/api/verify-key", methods=["POST"])
 def verify_key():
-    """Quick check if an OpenAI API key is valid."""
+    """Quick check if an API key is valid (supports OpenAI and OpenRouter)."""
     data = request.get_json(silent=True) or {}
     api_key = data.get("api_key", "").strip()
+    provider = data.get("provider", "openai").strip()
     if not api_key:
         return jsonify({"valid": False, "error": "No key provided"})
     try:
-        client = OpenAI(api_key=api_key)
+        client = _make_client(api_key, provider)
         client.models.list()
         return jsonify({"valid": True})
     except Exception as e:
@@ -362,6 +386,8 @@ def api_status():
         "available_models": LOCAL_MODELS,
         "cuda_available": cuda,
         "default_device": "cuda" if cuda else "cpu",
+        "correction_models": CORRECTION_MODELS,
+        "openrouter_correction_models": OPENROUTER_CORRECTION_MODELS,
     })
 
 
@@ -515,19 +541,34 @@ def transcribe():
     if preferred_device not in ("cuda", "cpu", "auto"):
         preferred_device = "auto"
 
+    # Provider settings
+    provider = request.form.get("provider", "openai").strip()
+    if provider not in ("openai", "openrouter"):
+        provider = "openai"
+
     # Correction settings
     correction_enabled = request.form.get("correction", "").strip() == "1"
     correction_model = request.form.get("correction_model", "gpt-4.1-nano").strip()
-    if correction_model not in CORRECTION_MODELS:
+    correction_provider = request.form.get("correction_provider", provider).strip()
+    if correction_provider not in ("openai", "openrouter"):
+        correction_provider = provider
+    # Accept any model string for OpenRouter (they have thousands of models)
+    if correction_provider == "openai" and correction_model not in CORRECTION_MODELS:
         correction_model = "gpt-4.1-nano"
 
     api_key = request.form.get("api_key", "").strip()
     if not api_key:
         api_key = os.environ.get("OPENAI_API_KEY", "")
 
-    needs_api = not use_local or correction_enabled
-    if needs_api and not api_key:
-        return jsonify({"error": "Please provide an OpenAI API key"}), 400
+    correction_api_key = request.form.get("correction_api_key", "").strip() or api_key
+
+    # For OpenAI transcription mode, need OpenAI key
+    needs_transcribe_api = not use_local
+    if needs_transcribe_api and not api_key:
+        return jsonify({"error": "Please provide an API key for cloud transcription"}), 400
+    # For correction, need the correction provider's key
+    if correction_enabled and not correction_api_key:
+        return jsonify({"error": "Please provide an API key for AI correction"}), 400
 
     # Save file and prep before streaming
     tmp_dir = tempfile.mkdtemp(prefix="stt_")
@@ -549,7 +590,7 @@ def transcribe():
                     return
                 yield sse_event("status", {"device": device, "model": model_type})
             else:
-                client = OpenAI(api_key=api_key)
+                client = _make_client(api_key, provider)
 
             # Step 1: Extract audio
             yield sse_event("progress", {"step": "extract", "pct": 5, "msg": "Extracting audio..."})
@@ -626,7 +667,7 @@ def transcribe():
 
             # Step 5: AI Correction (optional)
             if correction_enabled and merged:
-                correction_client = client if client else OpenAI(api_key=api_key)
+                correction_client = _make_client(correction_api_key, correction_provider)
                 total_segs = len(merged)
                 num_batches = math.ceil(total_segs / CORRECTION_BATCH_SIZE)
                 yield sse_event("progress", {

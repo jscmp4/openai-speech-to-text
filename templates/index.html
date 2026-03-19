@@ -160,6 +160,20 @@
     color: #888;
   }
 
+  /* Provider Buttons */
+  .provider-btn {
+    padding: 6px 16px;
+    background: #222;
+    color: #888;
+    border: 1px solid #333;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s;
+  }
+  .provider-btn:hover { background: #2a2a2a; color: #ccc; }
+  .provider-btn.active { background: #1a3a5a; color: #4a9eff; border-color: #2a5a8a; }
+
   /* API Key Section */
   .api-section {
     background: #1a1a1a;
@@ -530,7 +544,12 @@
 
   <!-- API Key -->
   <div class="api-section" id="apiSection">
-    <label>OpenAI API Key</label>
+    <label>API Provider</label>
+    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+      <button class="provider-btn active" id="providerOpenai" onclick="setProvider('openai')">OpenAI</button>
+      <button class="provider-btn" id="providerOpenrouter" onclick="setProvider('openrouter')">OpenRouter</button>
+    </div>
+    <label id="apiKeyLabel">OpenAI API Key</label>
     <div class="api-row">
       <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
       <button onclick="toggleKeyVisibility()" id="toggleBtn">Show</button>
@@ -538,6 +557,9 @@
     </div>
     <div class="api-saved" id="apiSaved">API key saved to browser</div>
     <div class="api-status" id="apiStatus"></div>
+    <div class="provider-hint" id="providerHint" style="font-size: 11px; color: #555; margin-top: 8px;">
+      Direct OpenAI API. Required for cloud transcription (gpt-4o-transcribe).
+    </div>
   </div>
 
   <!-- AI Correction -->
@@ -550,6 +572,18 @@
       </label>
     </div>
     <div class="correction-options" id="correctionOptions">
+      <label>Correction Provider</label>
+      <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+        <button class="provider-btn active" id="corrProviderOpenai" onclick="setCorrectionProvider('openai')">OpenAI</button>
+        <button class="provider-btn" id="corrProviderOpenrouter" onclick="setCorrectionProvider('openrouter')">OpenRouter</button>
+      </div>
+      <div id="corrApiKeyRow" style="display: none; margin-bottom: 10px;">
+        <label>OpenRouter API Key (for correction)</label>
+        <div class="api-row">
+          <input type="password" id="correctionApiKey" placeholder="sk-or-..." autocomplete="off">
+          <button onclick="saveCorrectionKey()">Save</button>
+        </div>
+      </div>
       <label>Correction Model</label>
       <select class="model-select" id="correctionModel">
         <option value="gpt-4.1-nano">gpt-4.1-nano - Cheapest, fast</option>
@@ -558,7 +592,7 @@
         <option value="gpt-4o-mini">gpt-4o-mini - Previous gen, cheap</option>
         <option value="gpt-4o">gpt-4o - Previous gen, strong</option>
       </select>
-      <div class="correction-hint">Uses OpenAI API to fix transcription errors based on context. Requires API key.</div>
+      <div class="correction-hint" id="correctionHint">Uses OpenAI API to fix transcription errors based on context. Requires API key.</div>
     </div>
   </div>
 
@@ -615,11 +649,45 @@ let selectedFiles = [];
 let currentTab = 'formatted';
 let resultData = {};
 let allResults = []; // for batch: [{name, formatted, full_text, segments}]
+let currentProvider = 'openai';
+let currentCorrProvider = 'openai';
+
+const OPENROUTER_MODELS = [
+  {id: 'qwen/qwen3-30b-a3b', label: 'Qwen3 30B MoE - $0.08/M, best for CJK'},
+  {id: 'qwen/qwen3.5-9b', label: 'Qwen3.5 9B - $0.05/M, ultra cheap'},
+  {id: 'openai/gpt-4.1-nano', label: 'GPT-4.1 Nano - $0.10/M, fast'},
+  {id: 'google/gemini-2.0-flash-001', label: 'Gemini 2.0 Flash - $0.10/M, multilingual'},
+  {id: 'qwen/qwen-2.5-72b-instruct', label: 'Qwen 2.5 72B - $0.12/M, 29+ languages'},
+  {id: 'openai/gpt-4o-mini', label: 'GPT-4o Mini - $0.15/M, reliable'},
+  {id: 'deepseek/deepseek-chat-v3-0324', label: 'DeepSeek V3 - $0.20/M, great for Chinese'},
+  {id: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash - $0.30/M, best quality'},
+  {id: 'openai/gpt-4.1-mini', label: 'GPT-4.1 Mini - $0.40/M, high quality'},
+  {id: 'openai/gpt-4.1', label: 'GPT-4.1 - $2.00/M, premium'},
+];
+const OPENAI_MODELS = [
+  {id: 'gpt-4.1-nano', label: 'gpt-4.1-nano - Cheapest, fast'},
+  {id: 'gpt-4.1-mini', label: 'gpt-4.1-mini - Good balance'},
+  {id: 'gpt-4.1', label: 'gpt-4.1 - Best quality'},
+  {id: 'gpt-4o-mini', label: 'gpt-4o-mini - Previous gen, cheap'},
+  {id: 'gpt-4o', label: 'gpt-4o - Previous gen, strong'},
+];
 
 // Load saved settings
 window.addEventListener('DOMContentLoaded', () => {
+  // Load provider
+  const savedProvider = localStorage.getItem('stt_provider');
+  if (savedProvider) setProvider(savedProvider, true);
+  // Load API keys
   const saved = localStorage.getItem('openai_api_key');
-  if (saved) document.getElementById('apiKey').value = saved;
+  if (saved && currentProvider === 'openai') document.getElementById('apiKey').value = saved;
+  const savedOR = localStorage.getItem('openrouter_api_key');
+  if (savedOR && currentProvider === 'openrouter') document.getElementById('apiKey').value = savedOR;
+  // Load correction provider
+  const savedCorrProv = localStorage.getItem('stt_correction_provider');
+  if (savedCorrProv) setCorrectionProvider(savedCorrProv, true);
+  const savedCorrKey = localStorage.getItem('openrouter_correction_key');
+  if (savedCorrKey) document.getElementById('correctionApiKey').value = savedCorrKey;
+
   const savedModel = localStorage.getItem('stt_model');
   if (savedModel) document.getElementById('modelSelect').value = savedModel;
   const savedCorrection = localStorage.getItem('stt_correction');
@@ -636,6 +704,86 @@ window.addEventListener('DOMContentLoaded', () => {
   // Detect GPU
   detectGpu();
 });
+
+function setProvider(prov, skipSave) {
+  currentProvider = prov;
+  if (!skipSave) localStorage.setItem('stt_provider', prov);
+
+  // Toggle button styles
+  document.getElementById('providerOpenai').className = 'provider-btn' + (prov === 'openai' ? ' active' : '');
+  document.getElementById('providerOpenrouter').className = 'provider-btn' + (prov === 'openrouter' ? ' active' : '');
+
+  // Swap saved key
+  const keyInput = document.getElementById('apiKey');
+  const label = document.getElementById('apiKeyLabel');
+  const hint = document.getElementById('providerHint');
+
+  if (prov === 'openrouter') {
+    // Save current openai key, load openrouter key
+    if (keyInput.value.trim() && currentProvider !== 'openrouter') {
+      localStorage.setItem('openai_api_key', keyInput.value.trim());
+    }
+    keyInput.value = localStorage.getItem('openrouter_api_key') || '';
+    keyInput.placeholder = 'sk-or-...';
+    label.textContent = 'OpenRouter API Key';
+    hint.innerHTML = 'Uses <a href="https://openrouter.ai/keys" target="_blank" style="color:#4a9eff">OpenRouter</a> to access many models. Cheaper alternatives available. For correction only (local transcription needs no API).';
+  } else {
+    if (keyInput.value.trim() && currentProvider !== 'openai') {
+      localStorage.setItem('openrouter_api_key', keyInput.value.trim());
+    }
+    keyInput.value = localStorage.getItem('openai_api_key') || '';
+    keyInput.placeholder = 'sk-...';
+    label.textContent = 'OpenAI API Key';
+    hint.textContent = 'Direct OpenAI API. Required for cloud transcription (gpt-4o-transcribe).';
+  }
+
+  // Reset verification status
+  document.getElementById('apiStatus').className = 'api-status';
+
+  // Update model selector - hide OpenAI transcription if using OpenRouter
+  onModelChange();
+}
+
+function setCorrectionProvider(prov, skipSave) {
+  currentCorrProvider = prov;
+  if (!skipSave) localStorage.setItem('stt_correction_provider', prov);
+
+  document.getElementById('corrProviderOpenai').className = 'provider-btn' + (prov === 'openai' ? ' active' : '');
+  document.getElementById('corrProviderOpenrouter').className = 'provider-btn' + (prov === 'openrouter' ? ' active' : '');
+
+  // Show/hide separate API key for correction if using different provider
+  const showSeparateKey = (prov === 'openrouter' && currentProvider !== 'openrouter');
+  document.getElementById('corrApiKeyRow').style.display = showSeparateKey ? 'block' : 'none';
+
+  // Update correction model list
+  updateCorrectionModels(prov);
+
+  // Update hint
+  const hint = document.getElementById('correctionHint');
+  if (prov === 'openrouter') {
+    hint.innerHTML = 'Uses <a href="https://openrouter.ai" target="_blank" style="color:#4a9eff">OpenRouter</a> for correction. Many cheap model options.';
+  } else {
+    hint.textContent = 'Uses OpenAI API to fix transcription errors based on context.';
+  }
+}
+
+function updateCorrectionModels(prov) {
+  const select = document.getElementById('correctionModel');
+  const models = prov === 'openrouter' ? OPENROUTER_MODELS : OPENAI_MODELS;
+  const savedModel = localStorage.getItem('stt_correction_model');
+  select.innerHTML = models.map(m =>
+    `<option value="${m.id}">${m.label}</option>`
+  ).join('');
+  // Restore saved if it exists in the list
+  if (savedModel && models.some(m => m.id === savedModel)) {
+    select.value = savedModel;
+  }
+}
+
+function saveCorrectionKey() {
+  const key = document.getElementById('correctionApiKey').value.trim();
+  if (key) localStorage.setItem('openrouter_correction_key', key);
+}
 
 function detectGpu() {
   const panel = document.getElementById('gpuPanel');
@@ -748,6 +896,22 @@ function onModelChange() {
   const badge = document.getElementById('deviceBadge');
   const deviceRow = document.getElementById('deviceRow');
   localStorage.setItem('stt_model', model);
+
+  // Show/hide OpenAI transcription option based on provider
+  const openaiOption = document.querySelector('#modelSelect option[value="openai"]');
+  if (currentProvider === 'openrouter') {
+    openaiOption.disabled = true;
+    openaiOption.textContent = 'OpenAI API (requires OpenAI key, not available via OpenRouter)';
+    if (model === 'openai') {
+      document.getElementById('modelSelect').value = 'small';
+      onModelChange();
+      return;
+    }
+  } else {
+    openaiOption.disabled = false;
+    openaiOption.textContent = 'OpenAI API (gpt-4o-transcribe-diarize)';
+  }
+
   if (model === 'openai') {
     hint.textContent = 'Uses OpenAI API, requires API key. Supports speaker diarization.';
     badge.className = 'device-badge cloud';
@@ -810,7 +974,8 @@ function updateTranscribeBtn() {
 function saveAndVerifyApiKey() {
   const key = document.getElementById('apiKey').value.trim();
   if (!key) return;
-  localStorage.setItem('openai_api_key', key);
+  const storageKey = currentProvider === 'openrouter' ? 'openrouter_api_key' : 'openai_api_key';
+  localStorage.setItem(storageKey, key);
   const el = document.getElementById('apiSaved');
   el.style.display = 'block';
   setTimeout(() => el.style.display = 'none', 2000);
@@ -825,11 +990,11 @@ function verifyApiKey(key) {
   fetch('/api/verify-key', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({api_key: key}),
+    body: JSON.stringify({api_key: key, provider: currentProvider}),
   }).then(r => r.json()).then(data => {
     if (data.valid) {
       status.className = 'api-status valid';
-      status.textContent = 'API key verified';
+      status.textContent = 'API key verified (' + currentProvider + ')';
     } else {
       status.className = 'api-status invalid';
       status.textContent = 'Invalid API key: ' + (data.error || 'unknown error');
@@ -930,8 +1095,15 @@ async function startBatchTranscribe() {
   const apiKey = document.getElementById('apiKey').value.trim();
   const correctionOn = document.getElementById('correctionToggle').checked;
   const correctionModel = document.getElementById('correctionModel').value;
-  const needsKey = model === 'openai' || correctionOn;
-  if (needsKey && !apiKey) { showError('Please enter your OpenAI API key'); return; }
+  const needsTranscribeKey = model === 'openai';
+  const needsCorrKey = correctionOn;
+  if (needsTranscribeKey && !apiKey) { showError('Please enter your API key for cloud transcription'); return; }
+  if (needsCorrKey) {
+    const corrKey = (currentCorrProvider === 'openrouter' && currentProvider !== 'openrouter')
+      ? document.getElementById('correctionApiKey').value.trim()
+      : apiKey;
+    if (!corrKey) { showError('Please enter an API key for AI correction'); return; }
+  }
   if (selectedFiles.length === 0) { showError('Please select file(s)'); return; }
 
   if (apiKey) localStorage.setItem('openai_api_key', apiKey);
@@ -965,11 +1137,20 @@ async function startBatchTranscribe() {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('model_type', model);
+    formData.append('provider', currentProvider);
     if (model !== 'openai') formData.append('device', document.getElementById('deviceSelect').value);
-    if (needsKey) formData.append('api_key', apiKey);
+    if (apiKey) formData.append('api_key', apiKey);
     if (correctionOn) {
       formData.append('correction', '1');
       formData.append('correction_model', correctionModel);
+      formData.append('correction_provider', currentCorrProvider);
+      // Send separate correction API key if using different provider
+      const corrKey = document.getElementById('correctionApiKey').value.trim();
+      if (currentCorrProvider === 'openrouter' && corrKey) {
+        formData.append('correction_api_key', corrKey);
+      } else if (currentCorrProvider === 'openrouter' && currentProvider === 'openrouter') {
+        formData.append('correction_api_key', apiKey);
+      }
     }
 
     try {
