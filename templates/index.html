@@ -573,10 +573,11 @@
     </div>
     <div class="correction-options" id="diarizeOptions" style="display:none; margin-top: 12px;">
       <label>HuggingFace Token</label>
-      <div class="api-row" style="margin-bottom: 10px;">
+      <div class="api-row" style="margin-bottom: 4px;">
         <input type="password" id="hfToken" placeholder="hf_..." autocomplete="off">
         <button onclick="saveHfToken()">Save</button>
       </div>
+      <div id="hfTokenStatus" style="font-size: 11px; margin-bottom: 8px; height: 14px;"></div>
       <div style="font-size: 11px; color: #555; margin-bottom: 10px;">
         Free token from <a href="https://huggingface.co/settings/tokens" target="_blank" style="color:#4a9eff">huggingface.co/settings/tokens</a>.
         You must also accept the <a href="https://huggingface.co/pyannote/speaker-diarization-3.1" target="_blank" style="color:#4a9eff">model license</a> (click "Agree" on the model page).
@@ -694,16 +695,14 @@ let allResults = []; // for batch: [{name, formatted, full_text, segments}]
 let currentProvider = 'openai';
 let currentCorrProvider = 'openai';
 
+// Featured models shown before full list loads from API
 let OPENROUTER_MODELS = [
-  {id: 'qwen/qwen3-30b-a3b', label: 'Qwen3 30B MoE - $0.08/M'},
-  {id: 'qwen/qwen3.5-9b', label: 'Qwen3.5 9B - $0.05/M'},
-  {id: 'openai/gpt-4.1-nano', label: 'GPT-4.1 Nano - $0.10/M'},
-  {id: 'google/gemini-2.0-flash-001', label: 'Gemini 2.0 Flash - $0.10/M'},
-  {id: 'openai/gpt-4o-mini', label: 'GPT-4o Mini - $0.15/M'},
-  {id: 'deepseek/deepseek-chat-v3-0324', label: 'DeepSeek V3 - $0.20/M'},
-  {id: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash - $0.30/M'},
-  {id: 'openai/gpt-4.1-mini', label: 'GPT-4.1 Mini - $0.40/M'},
-  {id: 'openai/gpt-4.1', label: 'GPT-4.1 - $2.00/M'},
+  {id: 'qwen/qwen3.5-9b',             label: '★ Qwen3.5 9B — $0.05/M · cheapest, great for Chinese'},
+  {id: 'qwen/qwen3-30b-a3b',          label: '★ Qwen3 30B MoE — $0.08/M · best value overall'},
+  {id: 'deepseek/deepseek-chat-v3-0324', label: '★ DeepSeek V3 — $0.14/M · multilingual, technical'},
+  {id: 'google/gemini-2.0-flash-001', label: '★ Gemini 2.0 Flash — $0.10/M · fast, multilingual'},
+  {id: 'google/gemini-2.5-flash',     label: '★ Gemini 2.5 Flash — $0.30/M · best quality/speed'},
+  {id: 'openai/gpt-4o-mini',          label: '★ GPT-4o Mini — $0.15/M · reliable English correction'},
 ];
 let openrouterModelsFetched = false;
 
@@ -715,9 +714,20 @@ async function fetchOpenRouterModels() {
     const resp = await fetch('/api/openrouter-models');
     const data = await resp.json();
     if (data.models && data.models.length > 0) {
+      const FEATURED = new Set([
+        'qwen/qwen3.5-9b', 'qwen/qwen3-30b-a3b', 'deepseek/deepseek-chat-v3-0324',
+        'google/gemini-2.0-flash-001', 'google/gemini-2.5-flash', 'openai/gpt-4o-mini',
+      ]);
       OPENROUTER_MODELS = data.models.map(m => {
         const price = m.price_per_m > 0 ? `$${m.price_per_m < 0.01 ? m.price_per_m.toFixed(4) : m.price_per_m.toFixed(2)}/M` : 'Free';
-        return {id: m.id, label: `${m.name} - ${price}`};
+        const star = FEATURED.has(m.id) ? '★ ' : '';
+        return {id: m.id, label: `${star}${m.name} — ${price}`};
+      });
+      // Sort: featured first, then rest by price
+      OPENROUTER_MODELS.sort((a, b) => {
+        const aF = FEATURED.has(a.id), bF = FEATURED.has(b.id);
+        if (aF !== bF) return aF ? -1 : 1;
+        return 0;
       });
       openrouterModelsFetched = true;
       if (currentCorrProvider === 'openrouter') updateCorrectionModels('openrouter');
@@ -775,7 +785,12 @@ window.addEventListener('DOMContentLoaded', () => {
   if (savedDevice) document.getElementById('deviceSelect').value = savedDevice;
   // Load diarization settings
   const savedHfToken = localStorage.getItem('stt_hf_token');
-  if (savedHfToken) document.getElementById('hfToken').value = savedHfToken;
+  if (savedHfToken) {
+    document.getElementById('hfToken').value = savedHfToken;
+    const st = document.getElementById('hfTokenStatus');
+    st.textContent = '✓ Token saved';
+    st.style.color = '#6c6';
+  }
   const savedDiarize = localStorage.getItem('stt_diarize');
   if (savedDiarize === '1') document.getElementById('diarizeToggle').checked = true;
   const savedNumSpeakers = localStorage.getItem('stt_num_speakers');
@@ -887,17 +902,14 @@ function updateCorrectionModels(prov) {
   const models = prov === 'openrouter' ? OPENROUTER_MODELS : OPENAI_MODELS;
   const savedModel = localStorage.getItem('stt_correction_model');
 
-  // Show search row + expand dropdown for OpenRouter (many models)
+  // Show search row for OpenRouter, always keep as normal dropdown (size=1)
+  select.size = 1;
+  select.style.height = '';
+  select.style.overflow = '';
   if (prov === 'openrouter') {
     searchRow.style.display = 'block';
-    select.size = Math.min(8, models.length);
-    select.style.height = 'auto';
-    select.style.overflow = 'auto';
   } else {
     searchRow.style.display = 'none';
-    select.size = 1;
-    select.style.height = '';
-    select.style.overflow = '';
     document.getElementById('modelSearch').value = '';
   }
 
@@ -916,6 +928,7 @@ function filterModels(query) {
     !q || m.id.toLowerCase().includes(q) || m.label.toLowerCase().includes(q)
   );
   const savedModel = select.value;
+  select.size = 1;
   select.innerHTML = models.map(m =>
     `<option value="${m.id}">${m.label}</option>`
   ).join('');
@@ -1130,7 +1143,15 @@ function onDiarizeChange() {
 
 function saveHfToken() {
   const token = document.getElementById('hfToken').value.trim();
-  if (token) localStorage.setItem('stt_hf_token', token);
+  const status = document.getElementById('hfTokenStatus');
+  if (token) {
+    localStorage.setItem('stt_hf_token', token);
+    status.textContent = '✓ Token saved';
+    status.style.color = '#6c6';
+  } else {
+    localStorage.removeItem('stt_hf_token');
+    status.textContent = '';
+  }
 }
 
 function updateTranscribeBtn() {
