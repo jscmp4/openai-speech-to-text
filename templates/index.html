@@ -585,7 +585,17 @@
         </div>
       </div>
       <label>Correction Model</label>
-      <select class="model-select" id="correctionModel">
+      <div id="modelSearchRow" style="display:none; margin-bottom: 8px;">
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <input type="text" id="modelSearch" placeholder="Search models..." autocomplete="off"
+            style="flex:1; background:#111; border:1px solid #333; border-radius:8px; color:#e0e0e0; padding:8px 12px; font-size:13px; outline:none;"
+            oninput="filterModels(this.value)">
+          <button id="refreshModelsBtn" onclick="fetchOpenRouterModels()"
+            style="background:#1a3a5a; color:#4a9eff; border:1px solid #2a5a8a; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:12px; white-space:nowrap;">
+            Refresh Models</button>
+        </div>
+      </div>
+      <select class="model-select" id="correctionModel" size="1">
         <option value="gpt-4.1-nano">gpt-4.1-nano - Cheapest, fast</option>
         <option value="gpt-4.1-mini">gpt-4.1-mini - Good balance</option>
         <option value="gpt-4.1">gpt-4.1 - Best quality</option>
@@ -652,18 +662,37 @@ let allResults = []; // for batch: [{name, formatted, full_text, segments}]
 let currentProvider = 'openai';
 let currentCorrProvider = 'openai';
 
-const OPENROUTER_MODELS = [
-  {id: 'qwen/qwen3-30b-a3b', label: 'Qwen3 30B MoE - $0.08/M, best for CJK'},
-  {id: 'qwen/qwen3.5-9b', label: 'Qwen3.5 9B - $0.05/M, ultra cheap'},
-  {id: 'openai/gpt-4.1-nano', label: 'GPT-4.1 Nano - $0.10/M, fast'},
-  {id: 'google/gemini-2.0-flash-001', label: 'Gemini 2.0 Flash - $0.10/M, multilingual'},
-  {id: 'qwen/qwen-2.5-72b-instruct', label: 'Qwen 2.5 72B - $0.12/M, 29+ languages'},
-  {id: 'openai/gpt-4o-mini', label: 'GPT-4o Mini - $0.15/M, reliable'},
-  {id: 'deepseek/deepseek-chat-v3-0324', label: 'DeepSeek V3 - $0.20/M, great for Chinese'},
-  {id: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash - $0.30/M, best quality'},
-  {id: 'openai/gpt-4.1-mini', label: 'GPT-4.1 Mini - $0.40/M, high quality'},
-  {id: 'openai/gpt-4.1', label: 'GPT-4.1 - $2.00/M, premium'},
+let OPENROUTER_MODELS = [
+  {id: 'qwen/qwen3-30b-a3b', label: 'Qwen3 30B MoE - $0.08/M'},
+  {id: 'qwen/qwen3.5-9b', label: 'Qwen3.5 9B - $0.05/M'},
+  {id: 'openai/gpt-4.1-nano', label: 'GPT-4.1 Nano - $0.10/M'},
+  {id: 'google/gemini-2.0-flash-001', label: 'Gemini 2.0 Flash - $0.10/M'},
+  {id: 'openai/gpt-4o-mini', label: 'GPT-4o Mini - $0.15/M'},
+  {id: 'deepseek/deepseek-chat-v3-0324', label: 'DeepSeek V3 - $0.20/M'},
+  {id: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash - $0.30/M'},
+  {id: 'openai/gpt-4.1-mini', label: 'GPT-4.1 Mini - $0.40/M'},
+  {id: 'openai/gpt-4.1', label: 'GPT-4.1 - $2.00/M'},
 ];
+let openrouterModelsFetched = false;
+
+async function fetchOpenRouterModels() {
+  if (openrouterModelsFetched) return;
+  const btn = document.getElementById('refreshModelsBtn');
+  if (btn) { btn.textContent = 'Loading...'; btn.disabled = true; }
+  try {
+    const resp = await fetch('/api/openrouter-models');
+    const data = await resp.json();
+    if (data.models && data.models.length > 0) {
+      OPENROUTER_MODELS = data.models.map(m => {
+        const price = m.price_per_m > 0 ? `$${m.price_per_m < 0.01 ? m.price_per_m.toFixed(4) : m.price_per_m.toFixed(2)}/M` : 'Free';
+        return {id: m.id, label: `${m.name} - ${price}`};
+      });
+      openrouterModelsFetched = true;
+      if (currentCorrProvider === 'openrouter') updateCorrectionModels('openrouter');
+    }
+  } catch(e) { console.warn('Failed to fetch OpenRouter models:', e); }
+  if (btn) { btn.textContent = 'Refresh Models'; btn.disabled = false; }
+}
 const OPENAI_MODELS = [
   {id: 'gpt-4.1-nano', label: 'gpt-4.1-nano - Cheapest, fast'},
   {id: 'gpt-4.1-mini', label: 'gpt-4.1-mini - Good balance'},
@@ -797,10 +826,15 @@ function setCorrectionProvider(prov, skipSave) {
   // Update correction model list
   updateCorrectionModels(prov);
 
+  // Auto-fetch full model list when switching to OpenRouter
+  if (prov === 'openrouter' && !openrouterModelsFetched) {
+    fetchOpenRouterModels();
+  }
+
   // Update hint
   const hint = document.getElementById('correctionHint');
   if (prov === 'openrouter') {
-    hint.innerHTML = 'Uses <a href="https://openrouter.ai" target="_blank" style="color:#4a9eff">OpenRouter</a> for correction. Many cheap model options.';
+    hint.innerHTML = 'Uses <a href="https://openrouter.ai" target="_blank" style="color:#4a9eff">OpenRouter</a> for correction. Search from ' + OPENROUTER_MODELS.length + '+ models.';
   } else {
     hint.textContent = 'Uses OpenAI API to fix transcription errors based on context.';
   }
@@ -808,15 +842,44 @@ function setCorrectionProvider(prov, skipSave) {
 
 function updateCorrectionModels(prov) {
   const select = document.getElementById('correctionModel');
+  const searchRow = document.getElementById('modelSearchRow');
   const models = prov === 'openrouter' ? OPENROUTER_MODELS : OPENAI_MODELS;
   const savedModel = localStorage.getItem('stt_correction_model');
+
+  // Show search row + expand dropdown for OpenRouter (many models)
+  if (prov === 'openrouter') {
+    searchRow.style.display = 'block';
+    select.size = Math.min(8, models.length);
+    select.style.height = 'auto';
+    select.style.overflow = 'auto';
+  } else {
+    searchRow.style.display = 'none';
+    select.size = 1;
+    select.style.height = '';
+    select.style.overflow = '';
+    document.getElementById('modelSearch').value = '';
+  }
+
   select.innerHTML = models.map(m =>
     `<option value="${m.id}">${m.label}</option>`
   ).join('');
-  // Restore saved if it exists in the list
   if (savedModel && models.some(m => m.id === savedModel)) {
     select.value = savedModel;
   }
+}
+
+function filterModels(query) {
+  const select = document.getElementById('correctionModel');
+  const q = query.toLowerCase();
+  const models = OPENROUTER_MODELS.filter(m =>
+    !q || m.id.toLowerCase().includes(q) || m.label.toLowerCase().includes(q)
+  );
+  const savedModel = select.value;
+  select.innerHTML = models.map(m =>
+    `<option value="${m.id}">${m.label}</option>`
+  ).join('');
+  select.size = Math.min(8, Math.max(2, models.length));
+  if (models.some(m => m.id === savedModel)) select.value = savedModel;
 }
 
 function saveCorrectionKey() {

@@ -75,6 +75,9 @@ OPENROUTER_CORRECTION_MODELS = [
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
+# Cache for OpenRouter models list
+_openrouter_models_cache = {"models": [], "fetched_at": 0}
+
 
 def _make_client(api_key, provider="openai"):
     """Create an OpenAI-compatible client for the given provider."""
@@ -389,6 +392,48 @@ def api_status():
         "correction_models": CORRECTION_MODELS,
         "openrouter_correction_models": OPENROUTER_CORRECTION_MODELS,
     })
+
+
+@app.route("/api/openrouter-models")
+def list_openrouter_models():
+    """Fetch available models from OpenRouter API (cached for 10 minutes)."""
+    import time
+    cache = _openrouter_models_cache
+    now = time.time()
+    if cache["models"] and now - cache["fetched_at"] < 600:
+        return jsonify({"models": cache["models"]})
+    try:
+        req = Request(
+            f"{OPENROUTER_BASE_URL}/models",
+            headers={"User-Agent": "SpeechToText/1.0"},
+        )
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        models = []
+        for m in data.get("data", []):
+            mid = m.get("id", "")
+            # Skip meta/router models
+            if mid.startswith("openrouter/"):
+                continue
+            name = m.get("name", mid)
+            pricing = m.get("pricing", {})
+            prompt_price = float(pricing.get("prompt", "0") or "0")
+            # Price per million tokens
+            price_per_m = max(0, prompt_price * 1_000_000)
+            models.append({
+                "id": mid,
+                "name": name,
+                "price_per_m": round(price_per_m, 3),
+                "context_length": m.get("context_length", 0),
+            })
+        # Sort by price (cheapest first), then by name
+        models.sort(key=lambda x: (x["price_per_m"], x["name"]))
+        cache["models"] = models
+        cache["fetched_at"] = now
+        return jsonify({"models": models})
+    except Exception as e:
+        # Fall back to hardcoded list
+        return jsonify({"models": [], "error": str(e)})
 
 
 def _detect_nvidia_gpu():
