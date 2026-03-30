@@ -56,6 +56,9 @@ _whisper_models = {}
 _model_devices = {}  # model_name -> "cuda" or "cpu"
 _cuda_available = None  # None = not checked, True/False after check
 
+# Speaker diarization support (lazy loaded)
+_diarization_pipeline = None
+
 LOCAL_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 CORRECTION_MODELS = ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o"]
 
@@ -100,6 +103,60 @@ def check_cuda():
         _cuda_available = False
         print(f"  CUDA not available: {e}")
     return _cuda_available
+
+
+def get_diarization_pipeline(hf_token):
+    """Lazy-load pyannote speaker diarization pipeline."""
+    global _diarization_pipeline
+    if _diarization_pipeline is None:
+        from pyannote.audio import Pipeline
+        _diarization_pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=hf_token,
+        )
+        # Move to GPU if available
+        if check_cuda():
+            import torch
+            _diarization_pipeline.to(torch.device("cuda"))
+            print("  Diarization pipeline loaded on CUDA")
+        else:
+            print("  Diarization pipeline loaded on CPU")
+    return _diarization_pipeline
+
+
+def run_diarization(audio_path, hf_token, num_speakers=None):
+    """Run speaker diarization on an audio file. Returns list of (start, end, speaker)."""
+    pipeline = get_diarization_pipeline(hf_token)
+    kwargs = {}
+    if num_speakers and num_speakers > 0:
+        kwargs["num_speakers"] = num_speakers
+    diarization = pipeline(audio_path, **kwargs)
+    segments = []
+    for turn, _, speaker in diarization.itertracks(yield_label=True):
+        segments.append((turn.start, turn.end, speaker))
+    return segments
+
+
+def assign_speakers(transcription_segments, diarization_segments):
+    """Assign speaker labels from diarization to transcription segments by time overlap."""
+    for seg in transcription_segments:
+        seg_mid = (seg["start"] + seg["end"]) / 2
+        best_speaker = "SPEAKER_00"
+        best_overlap = 0
+        for d_start, d_end, d_speaker in diarization_segments:
+            # Calculate overlap
+            overlap_start = max(seg["start"], d_start)
+            overlap_end = min(seg["end"], d_end)
+            overlap = max(0, overlap_end - overlap_start)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_speaker = d_speaker
+            # Also check if midpoint falls in this diarization segment
+            if d_start <= seg_mid <= d_end and overlap >= best_overlap:
+                best_speaker = d_speaker
+                best_overlap = overlap
+        seg["speaker"] = best_speaker
+    return transcription_segments
 
 
 def _find_bundled_model(model_name):
@@ -466,6 +523,7 @@ def gpu_info():
         "gpu": gpu,
         "cuda_libs_installed": cuda_libs_installed,
         "cuda_available": cuda,
+        "platform": sys.platform,
     })
 
 
@@ -473,7 +531,9 @@ def gpu_info():
 def install_cuda():
     """Download CUDA DLLs from PyPI and extract to local cuda_libs directory."""
     if sys.platform != "win32":
-        return jsonify({"error": "GPU auto-install only supported on Windows"}), 400
+        def _linux_error():
+            yield sse_event("error", {"error": "Auto-install is Windows only. On Linux, CUDA should already work if nvidia drivers are installed. Run: pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 in your venv if needed."})
+        return Response(_linux_error(), mimetype="text/event-stream")
 
     def generate():
         try:
@@ -607,6 +667,14 @@ def transcribe():
 
     correction_api_key = request.form.get("correction_api_key", "").strip() or api_key
 
+    # Diarization settings (local mode only)
+    diarize_enabled = request.form.get("diarize", "").strip() == "1"
+    hf_token = request.form.get("hf_token", "").strip()
+    num_speakers_str = request.form.get("num_speakers", "").strip()
+    num_speakers = int(num_speakers_str) if num_speakers_str.isdigit() and int(num_speakers_str) > 0 else None
+    if diarize_enabled and use_local and not hf_token:
+        return jsonify({"error": "Speaker diarization requires a HuggingFace token. Get one free at huggingface.co/settings/tokens"}), 400
+
     # For OpenAI transcription mode, need OpenAI key
     needs_transcribe_api = not use_local
     if needs_transcribe_api and not api_key:
@@ -642,6 +710,18 @@ def transcribe():
             audio_path = os.path.join(tmp_dir, "audio.mp3")
             extract_audio(input_path, audio_path)
 
+            # Step 1.5: Speaker diarization (local mode only)
+            diarization_result = None
+            if diarize_enabled and use_local:
+                yield sse_event("progress", {"step": "diarize", "pct": 8, "msg": "Loading speaker diarization model..."})
+                try:
+                    yield sse_event("progress", {"step": "diarize", "pct": 10, "msg": "Identifying speakers..."})
+                    diarization_result = run_diarization(audio_path, hf_token, num_speakers)
+                    n_speakers = len(set(s for _, _, s in diarization_result))
+                    yield sse_event("progress", {"step": "diarize", "pct": 18, "msg": f"Found {n_speakers} speaker(s). Starting transcription..."})
+                except Exception as e:
+                    yield sse_event("progress", {"step": "diarize", "pct": 18, "msg": f"Diarization failed: {e}. Continuing without speaker labels..."})
+
             # Step 2: Split (only needed for OpenAI due to size limits)
             if use_local:
                 chunks = [audio_path]
@@ -676,6 +756,11 @@ def transcribe():
                         "elapsed": format_timestamp(seg["end"]),
                         "total": format_timestamp(audio_duration),
                     })
+
+                # Assign speaker labels from diarization
+                if diarization_result and all_segments:
+                    yield sse_event("progress", {"step": "assign_speakers", "pct": 91, "msg": "Assigning speaker labels..."})
+                    all_segments = assign_speakers(all_segments, diarization_result)
             else:
                 # OpenAI: chunk-based, stream segments as each chunk completes
                 audio_duration = get_duration(audio_path)

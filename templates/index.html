@@ -562,6 +562,38 @@
     </div>
   </div>
 
+  <!-- Speaker Diarization -->
+  <div class="correction-section" id="diarizeSection">
+    <div class="correction-header">
+      <label>Speaker Diarization (who is speaking)</label>
+      <label class="toggle-switch">
+        <input type="checkbox" id="diarizeToggle" onchange="onDiarizeChange()">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    <div class="correction-options" id="diarizeOptions" style="display:none; margin-top: 12px;">
+      <label>HuggingFace Token</label>
+      <div class="api-row" style="margin-bottom: 10px;">
+        <input type="password" id="hfToken" placeholder="hf_..." autocomplete="off">
+        <button onclick="saveHfToken()">Save</button>
+      </div>
+      <div style="font-size: 11px; color: #555; margin-bottom: 10px;">
+        Free token from <a href="https://huggingface.co/settings/tokens" target="_blank" style="color:#4a9eff">huggingface.co/settings/tokens</a>.
+        You must also accept the <a href="https://huggingface.co/pyannote/speaker-diarization-3.1" target="_blank" style="color:#4a9eff">model license</a> (click "Agree" on the model page).
+      </div>
+      <label>Number of Speakers (optional)</label>
+      <select class="model-select" id="numSpeakers" style="margin-bottom: 8px;">
+        <option value="">Auto-detect</option>
+        <option value="2">2 speakers</option>
+        <option value="3">3 speakers</option>
+        <option value="4">4 speakers</option>
+        <option value="5">5 speakers</option>
+        <option value="6">6 speakers</option>
+      </select>
+      <div class="correction-hint">Identifies different speakers in audio. Only works with local models. First run downloads ~2GB model.</div>
+    </div>
+  </div>
+
   <!-- AI Correction -->
   <div class="correction-section">
     <div class="correction-header">
@@ -741,8 +773,17 @@ window.addEventListener('DOMContentLoaded', () => {
   if (savedCorrModel) document.getElementById('correctionModel').value = savedCorrModel;
   const savedDevice = localStorage.getItem('stt_device');
   if (savedDevice) document.getElementById('deviceSelect').value = savedDevice;
+  // Load diarization settings
+  const savedHfToken = localStorage.getItem('stt_hf_token');
+  if (savedHfToken) document.getElementById('hfToken').value = savedHfToken;
+  const savedDiarize = localStorage.getItem('stt_diarize');
+  if (savedDiarize === '1') document.getElementById('diarizeToggle').checked = true;
+  const savedNumSpeakers = localStorage.getItem('stt_num_speakers');
+  if (savedNumSpeakers) document.getElementById('numSpeakers').value = savedNumSpeakers;
+
   onModelChange();
   onCorrectionChange();
+  onDiarizeChange();
 
   // Show saved key status & auto-verify
   const apiKey = keyInput.value.trim();
@@ -924,7 +965,12 @@ function detectGpu() {
       } else {
         badgeEl.className = 'gpu-status-badge available';
         badgeEl.textContent = 'GPU Available';
-        btnEl.style.display = '';
+        if (data.platform === 'win32') {
+          btnEl.style.display = '';
+        } else {
+          btnEl.style.display = 'none';
+          metaEl.textContent += ' | CUDA not active — ensure nvidia drivers & cuda toolkit are installed';
+        }
       }
     }
   }).catch(() => {
@@ -1025,6 +1071,9 @@ function onModelChange() {
     deviceRow.style.display = 'block';
     fetchDeviceStatus(model);
   }
+  // Show/hide diarization section based on local vs cloud
+  const isLocal = ['tiny','base','small','medium','large-v3'].includes(model);
+  document.getElementById('diarizeSection').style.display = isLocal ? '' : 'none';
   updateTranscribeBtn();
 }
 
@@ -1067,6 +1116,21 @@ function onCorrectionChange() {
   const enabled = document.getElementById('correctionToggle').checked;
   document.getElementById('correctionOptions').style.display = enabled ? 'block' : 'none';
   localStorage.setItem('stt_correction', enabled ? '1' : '0');
+}
+
+function onDiarizeChange() {
+  const enabled = document.getElementById('diarizeToggle').checked;
+  document.getElementById('diarizeOptions').style.display = enabled ? 'block' : 'none';
+  localStorage.setItem('stt_diarize', enabled ? '1' : '0');
+  // Only show diarization section for local models
+  const modelType = document.getElementById('modelSelect').value;
+  const isLocal = ['tiny','base','small','medium','large-v3'].includes(modelType);
+  document.getElementById('diarizeSection').style.display = isLocal ? '' : 'none';
+}
+
+function saveHfToken() {
+  const token = document.getElementById('hfToken').value.trim();
+  if (token) localStorage.setItem('stt_hf_token', token);
 }
 
 function updateTranscribeBtn() {
@@ -1264,6 +1328,15 @@ async function startBatchTranscribe() {
           || (currentProvider === 'openrouter' ? apiKey : '');
         if (corrKey) formData.append('correction_api_key', corrKey);
       }
+    }
+    // Diarization params
+    if (document.getElementById('diarizeToggle').checked && ['tiny','base','small','medium','large-v3'].includes(model)) {
+      formData.append('diarize', '1');
+      const hfToken = document.getElementById('hfToken').value.trim() || localStorage.getItem('stt_hf_token') || '';
+      if (hfToken) formData.append('hf_token', hfToken);
+      const numSpeakers = document.getElementById('numSpeakers').value;
+      if (numSpeakers) formData.append('num_speakers', numSpeakers);
+      localStorage.setItem('stt_num_speakers', numSpeakers);
     }
 
     try {
