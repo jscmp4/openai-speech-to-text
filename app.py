@@ -845,5 +845,6 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
 
-    print(f"\n  Speech-to-Text is running at: http://localhost:{port}\n")
-    app.run(host="127.0.0.1", port=port, debug=False)
+    host = os.environ.get("HOST", "0.0.0.0")
+    print(f"\n  Speech-to-Text is running at: http://{host}:{port}\n")
+    app.run(host=host, port=port, debug=False)
