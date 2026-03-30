@@ -59,6 +59,18 @@ _cuda_available = None  # None = not checked, True/False after check
 # Speaker diarization support (lazy loaded)
 _diarization_pipeline = None
 
+# Log file path
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "transcription_log.jsonl")
+
+
+def write_log(entry: dict):
+    """Append a log entry to the JSONL log file."""
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"  Log write failed: {e}")
+
 LOCAL_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 CORRECTION_MODELS = ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o"]
 
@@ -451,6 +463,25 @@ def api_status():
     })
 
 
+@app.route("/api/logs")
+def get_logs():
+    """Return recent transcription log entries."""
+    try:
+        if not os.path.exists(LOG_FILE):
+            return jsonify({"logs": []})
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        # Return last 50 entries, newest first
+        entries = []
+        for line in reversed(lines[-50:]):
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+        return jsonify({"logs": entries})
+    except Exception as e:
+        return jsonify({"logs": [], "error": str(e)})
+
+
 @app.route("/api/openrouter-models")
 def list_openrouter_models():
     """Fetch available models from OpenRouter API (cached for 10 minutes)."""
@@ -689,6 +720,9 @@ def transcribe():
     input_path = os.path.join(tmp_dir, f"input.{ext}")
     file.save(input_path)
 
+    file_size_mb = round(os.path.getsize(input_path) / (1024 * 1024), 2)
+    _job_start = __import__("time").time()
+
     def generate():
         try:
             client = None
@@ -831,6 +865,21 @@ def transcribe():
                 lines.append(f"{ts}  {speaker}: {text}")
                 full_text.append(text)
 
+            elapsed = round(__import__("time").time() - _job_start, 1)
+            audio_dur = round(get_duration(audio_path), 1) if os.path.exists(audio_path) else 0
+            write_log({
+                "ts": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "file": file.filename,
+                "size_mb": file_size_mb,
+                "audio_sec": audio_dur,
+                "model": model_type,
+                "provider": provider if not use_local else "local",
+                "correction": correction_model if correction_enabled else None,
+                "diarize": diarize_enabled and use_local,
+                "elapsed_sec": elapsed,
+                "status": "ok",
+            })
+
             yield sse_event("progress", {"step": "done", "pct": 100, "msg": "Done!"})
             yield sse_event("result", {
                 "success": True,
@@ -841,6 +890,18 @@ def transcribe():
             })
 
         except Exception as e:
+            write_log({
+                "ts": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "file": file.filename,
+                "size_mb": file_size_mb,
+                "audio_sec": 0,
+                "model": model_type,
+                "provider": provider if not use_local else "local",
+                "correction": None,
+                "diarize": False,
+                "elapsed_sec": round(__import__("time").time() - _job_start, 1),
+                "status": f"error: {e}",
+            })
             yield sse_event("error", {"error": str(e)})
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)

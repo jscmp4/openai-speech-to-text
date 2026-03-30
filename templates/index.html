@@ -685,6 +685,15 @@
       <button class="btn-action" id="btnDownloadAll" onclick="downloadAllResults()" style="display:none">Download All .txt</button>
     </div>
   </div>
+
+  <!-- History Log -->
+  <div class="model-section" id="historySection" style="margin-top: 20px;">
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+      <label style="font-size: 13px; color: #888;">History</label>
+      <button onclick="loadHistory()" style="background:#1a1a1a; color:#555; border:1px solid #333; border-radius:6px; padding:4px 10px; cursor:pointer; font-size:11px;">Refresh</button>
+    </div>
+    <div id="historyList" style="font-size: 12px; color: #666;">Loading...</div>
+  </div>
 </div>
 
 <script>
@@ -799,6 +808,7 @@ window.addEventListener('DOMContentLoaded', () => {
   onModelChange();
   onCorrectionChange();
   onDiarizeChange();
+  loadHistory();
 
   // Show saved key status & auto-verify
   const apiKey = keyInput.value.trim();
@@ -1131,6 +1141,43 @@ function onCorrectionChange() {
   localStorage.setItem('stt_correction', enabled ? '1' : '0');
 }
 
+async function loadHistory() {
+  const el = document.getElementById('historyList');
+  try {
+    const resp = await fetch('/api/logs');
+    const data = await resp.json();
+    if (!data.logs || data.logs.length === 0) {
+      el.textContent = 'No transcriptions yet.';
+      return;
+    }
+    el.innerHTML = data.logs.map(l => {
+      const dur = l.audio_sec >= 60
+        ? `${Math.floor(l.audio_sec/60)}m${Math.round(l.audio_sec%60)}s`
+        : `${l.audio_sec}s`;
+      const elapsed = l.elapsed_sec >= 60
+        ? `${Math.floor(l.elapsed_sec/60)}m${Math.round(l.elapsed_sec%60)}s`
+        : `${l.elapsed_sec}s`;
+      const ok = l.status === 'ok';
+      const tags = [
+        l.model,
+        l.correction ? `corrected(${l.correction.split('/').pop()})` : null,
+        l.diarize ? 'diarized' : null,
+      ].filter(Boolean).join(' · ');
+      return `<div style="display:flex; justify-content:space-between; align-items:baseline; padding:6px 0; border-bottom:1px solid #1e1e1e;">
+        <div style="flex:1; min-width:0;">
+          <span style="color:${ok ? '#ccc' : '#e55'}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block;">${l.file}</span>
+          <span style="color:#555;">${l.ts} · ${tags}</span>
+        </div>
+        <div style="text-align:right; white-space:nowrap; margin-left:12px; color:#666;">
+          ${l.size_mb} MB · ${dur} audio · ⏱ ${elapsed}
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    el.textContent = 'Failed to load history.';
+  }
+}
+
 function onDiarizeChange() {
   const enabled = document.getElementById('diarizeToggle').checked;
   document.getElementById('diarizeOptions').style.display = enabled ? 'block' : 'none';
@@ -1430,6 +1477,7 @@ async function startBatchTranscribe() {
   document.getElementById('btnTranscribe').disabled = false;
   document.getElementById('btnTranscribe').textContent = 'Start Transcription';
   document.querySelectorAll('.fl-remove').forEach(b => b.style.display = '');
+  loadHistory();
 }
 
 function showLiveResult(fileName, fileIdx, totalFiles, lines, segments) {
