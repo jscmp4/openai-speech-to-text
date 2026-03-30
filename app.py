@@ -62,6 +62,10 @@ _diarization_pipeline = None
 # Log file path
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "transcription_log.jsonl")
 
+# Audio playback: store extracted audio for segment playback
+_AUDIO_DIR = os.path.join(tempfile.gettempdir(), "stt_audio")
+os.makedirs(_AUDIO_DIR, exist_ok=True)
+
 
 def write_log(entry: dict):
     """Append a log entry to the JSONL log file."""
@@ -71,7 +75,13 @@ def write_log(entry: dict):
     except Exception as e:
         print(f"  Log write failed: {e}")
 
-LOCAL_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
+LOCAL_MODELS = ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo", "distil-large-v3.5"]
+
+# Measured VRAM usage (MB) per model on float16. int8 uses ~60-65% of these values.
+MODEL_VRAM_MB = {
+    "tiny": 390, "base": 500, "small": 1000, "medium": 2500,
+    "large-v3": 4500, "large-v3-turbo": 2500, "distil-large-v3.5": 2400,
+}
 CORRECTION_MODELS = ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o"]
 
 # OpenRouter-compatible correction models (sorted cheap to quality)
@@ -108,7 +118,7 @@ def check_cuda():
         return _cuda_available
     try:
         import ctranslate2
-        _cuda_available = "cuda" in ctranslate2.get_supported_compute_types("cuda")
+        _cuda_available = bool(ctranslate2.get_supported_compute_types("cuda"))
         if _cuda_available:
             print("  CUDA is available")
     except Exception as e:
@@ -117,15 +127,19 @@ def check_cuda():
     return _cuda_available
 
 
+_diarization_token = None  # track which token was used to load pipeline
+
+
 def get_diarization_pipeline(hf_token):
     """Lazy-load pyannote speaker diarization pipeline."""
-    global _diarization_pipeline
-    if _diarization_pipeline is None:
+    global _diarization_pipeline, _diarization_token
+    if _diarization_pipeline is None or hf_token != _diarization_token:
         from pyannote.audio import Pipeline
         _diarization_pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=hf_token,
+            "pyannote/speaker-diarization-community-1",
+            token=hf_token,
         )
+        _diarization_token = hf_token
         # Move to GPU if available
         if check_cuda():
             import torch
@@ -136,17 +150,116 @@ def get_diarization_pipeline(hf_token):
     return _diarization_pipeline
 
 
-def run_diarization(audio_path, hf_token, num_speakers=None):
-    """Run speaker diarization on an audio file. Returns list of (start, end, speaker)."""
+def _load_audio_waveform(audio_path, sample_rate=16000):
+    """Load audio as a waveform dict using ffmpeg, bypassing torchcodec/torchaudio."""
+    import torch
+    import numpy as np
+    result = subprocess.run(
+        ["ffmpeg", "-i", audio_path, "-f", "f32le", "-acodec", "pcm_f32le",
+         "-ar", str(sample_rate), "-ac", "1", "-"],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg audio decode failed: {result.stderr.decode()[:200]}")
+    audio_np = np.frombuffer(result.stdout, dtype=np.float32).copy()
+    waveform = torch.from_numpy(audio_np).unsqueeze(0)  # (1, samples)
+    return {"waveform": waveform, "sample_rate": sample_rate}
+
+
+def _extract_diarization_segments(output):
+    """Extract (start, end, speaker) tuples from pyannote pipeline output."""
+    segments = []
+    if hasattr(output, 'exclusive_speaker_diarization'):
+        for turn, speaker in output.exclusive_speaker_diarization:
+            segments.append((turn.start, turn.end, speaker))
+    elif hasattr(output, 'speaker_diarization'):
+        for turn, speaker in output.speaker_diarization:
+            segments.append((turn.start, turn.end, speaker))
+    else:
+        # Legacy pyannote 3.x fallback
+        for turn, _, speaker in output.itertracks(yield_label=True):
+            segments.append((turn.start, turn.end, speaker))
+    return segments
+
+
+# Max chunk duration for diarization (seconds). Longer files are processed in chunks.
+DIARIZE_CHUNK_SEC = 1200  # 20 minutes
+
+
+def run_diarization(audio_path, hf_token, num_speakers=None, progress_cb=None):
+    """Run speaker diarization on an audio file. Returns list of (start, end, speaker).
+
+    For long audio (>20 min), processes in chunks to avoid memory issues.
+    Supports files of any length including 24+ hours.
+    progress_cb: optional callable(msg) to report progress.
+    """
+    import torch
     pipeline = get_diarization_pipeline(hf_token)
+
+    # Load full audio via ffmpeg
+    audio_input = _load_audio_waveform(audio_path)
+    total_samples = audio_input["waveform"].shape[1]
+    sr = audio_input["sample_rate"]
+    total_duration = total_samples / sr
+
     kwargs = {}
     if num_speakers and num_speakers > 0:
         kwargs["num_speakers"] = num_speakers
-    diarization = pipeline(audio_path, **kwargs)
-    segments = []
-    for turn, _, speaker in diarization.itertracks(yield_label=True):
-        segments.append((turn.start, turn.end, speaker))
+
+    # Short audio: process in one go
+    if total_duration <= DIARIZE_CHUNK_SEC:
+        if progress_cb:
+            progress_cb(f"Identifying speakers in {total_duration:.0f}s audio...")
+        output = pipeline(audio_input, **kwargs)
+        return _extract_diarization_segments(output)
+
+    # Long audio: process in chunks
+    n_chunks = math.ceil(total_samples / (DIARIZE_CHUNK_SEC * sr))
+    if progress_cb:
+        progress_cb(f"Identifying speakers in {total_duration/60:.0f} min audio ({n_chunks} chunks)...")
+    print(f"  Diarizing {total_duration:.0f}s audio in {n_chunks} chunks of {DIARIZE_CHUNK_SEC}s")
+    chunk_samples = DIARIZE_CHUNK_SEC * sr
+    all_segments = []
+    pos = 0
+    chunk_idx = 0
+
+    while pos < total_samples:
+        end = min(pos + chunk_samples, total_samples)
+        chunk_waveform = audio_input["waveform"][:, pos:end]
+        chunk_input = {"waveform": chunk_waveform, "sample_rate": sr}
+        offset_sec = pos / sr
+        chunk_idx += 1
+
+        if progress_cb:
+            progress_cb(f"Identifying speakers: chunk {chunk_idx}/{n_chunks} ({offset_sec/60:.0f}-{end/sr/60:.0f} min)...")
+        print(f"    Chunk {chunk_idx}/{n_chunks}: {offset_sec:.0f}s - {end/sr:.0f}s")
+        # Don't constrain num_speakers per chunk — let pyannote auto-detect
+        output = pipeline(chunk_input)
+        chunk_segs = _extract_diarization_segments(output)
+
+        # Offset timestamps to absolute positions
+        for start_t, end_t, speaker in chunk_segs:
+            all_segments.append((start_t + offset_sec, end_t + offset_sec, speaker))
+
+        pos = end
+        # Free memory
+        del chunk_waveform, chunk_input, output
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    return all_segments
     return segments
+
+
+def _friendly_speaker_label(raw_label):
+    """Convert pyannote labels like SPEAKER_00 to Speaker 1."""
+    if raw_label and raw_label.startswith("SPEAKER_"):
+        try:
+            num = int(raw_label.split("_")[1]) + 1
+            return f"Speaker {num}"
+        except (IndexError, ValueError):
+            pass
+    return raw_label
 
 
 def assign_speakers(transcription_segments, diarization_segments):
@@ -167,7 +280,7 @@ def assign_speakers(transcription_segments, diarization_segments):
             if d_start <= seg_mid <= d_end and overlap >= best_overlap:
                 best_speaker = d_speaker
                 best_overlap = overlap
-        seg["speaker"] = best_speaker
+        seg["speaker"] = _friendly_speaker_label(best_speaker)
     return transcription_segments
 
 
@@ -194,6 +307,35 @@ def _find_bundled_model(model_name):
     return None
 
 
+def _get_gpu_free_vram_mb():
+    """Get free VRAM in MB using nvidia-smi."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(float(result.stdout.strip().split("\n")[0]))
+    except Exception:
+        pass
+    return 0
+
+
+def _pick_cuda_compute_type(model_name):
+    """Pick best compute type for GPU based on available VRAM."""
+    vram_needed_f16 = MODEL_VRAM_MB.get(model_name, 3000)
+    free_vram = _get_gpu_free_vram_mb()
+    if free_vram <= 0:
+        return "float16"
+    # If float16 fits with 500MB headroom, use it; otherwise use int8_float16
+    if free_vram >= vram_needed_f16 + 500:
+        return "float16"
+    # int8_float16 uses ~60% of float16 VRAM
+    if free_vram >= int(vram_needed_f16 * 0.6) + 500:
+        return "int8_float16"
+    return "int8"
+
+
 def get_whisper_model(model_name, preferred_device=None):
     """Lazy-load a faster-whisper model. Auto-detect CUDA with fallback."""
     cache_key = f"{model_name}_{preferred_device or 'auto'}"
@@ -204,9 +346,11 @@ def get_whisper_model(model_name, preferred_device=None):
         if preferred_device == "cpu":
             devices = [("cpu", "int8")]
         elif preferred_device == "cuda":
-            devices = [("cuda", "float16")]
+            ct = _pick_cuda_compute_type(model_name)
+            devices = [("cuda", ct)]
         else:
-            devices = [("cuda", "float16"), ("cpu", "int8")]
+            ct = _pick_cuda_compute_type(model_name)
+            devices = [("cuda", ct), ("cpu", "int8")]
         for device, ct in devices:
             try:
                 model = WhisperModel(model_path, device=device, compute_type=ct)
@@ -406,6 +550,9 @@ def correct_segments_batch(client, segments, model, batch_idx, total_batches):
         temperature=0.3,
     )
     corrected = {}
+    if not resp.choices or not resp.choices[0].message or not resp.choices[0].message.content:
+        print(f"  Correction batch {batch_idx+1}/{total_batches}: empty response, skipping")
+        return corrected
     for line in resp.choices[0].message.content.strip().split("\n"):
         line = line.strip()
         if not line or ":" not in line:
@@ -426,6 +573,23 @@ def sse_event(event, data):
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/audio/<audio_id>")
+def serve_audio(audio_id):
+    """Serve extracted audio file for segment playback."""
+    # Sanitize: only allow alphanumeric + hyphen
+    import re
+    if not re.match(r'^[a-zA-Z0-9_-]+$', audio_id):
+        return "Invalid audio ID", 400
+    audio_path = os.path.join(_AUDIO_DIR, f"{audio_id}.mp3")
+    if not os.path.isfile(audio_path):
+        return "Audio not found", 404
+    return Response(
+        open(audio_path, "rb").read(),
+        mimetype="audio/mpeg",
+        headers={"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=3600"},
+    )
 
 
 @app.route("/api/local-models")
@@ -449,10 +613,119 @@ def verify_key():
         return jsonify({"valid": False, "error": str(e)})
 
 
+@app.route("/api/verify-hf-token", methods=["POST"])
+def verify_hf_token():
+    """Check if a HuggingFace token has access to pyannote/speaker-diarization-community-1."""
+    data = request.get_json(silent=True) or {}
+    hf_token = data.get("token", "").strip()
+    if not hf_token:
+        return jsonify({"valid": False, "error": "No token provided"})
+    try:
+        req = Request(
+            "https://huggingface.co/api/models/pyannote/speaker-diarization-community-1",
+            headers={"Authorization": f"Bearer {hf_token}"},
+        )
+        resp = urlopen(req, timeout=10)
+        info = json.loads(resp.read().decode())
+        # If we can read model info, the token is valid and has access
+        return jsonify({"valid": True, "model": info.get("modelId", "pyannote/speaker-diarization-community-1")})
+    except URLError as e:
+        err_msg = str(e)
+        if "403" in err_msg:
+            return jsonify({"valid": False, "error": "Token valid but model license not accepted. Click 'Agree' on the model page."})
+        if "401" in err_msg:
+            return jsonify({"valid": False, "error": "Invalid token"})
+        return jsonify({"valid": False, "error": f"Connection error: {err_msg}"})
+    except Exception as e:
+        return jsonify({"valid": False, "error": str(e)})
+
+
+@app.route("/api/test-diarization", methods=["POST"])
+def test_diarization():
+    """Full diagnostic: load pipeline + run on test audio. Returns step-by-step results."""
+    data = request.get_json(silent=True) or {}
+    hf_token = data.get("token", "").strip()
+    if not hf_token:
+        return jsonify({"ok": False, "step": "token", "error": "No HuggingFace token provided"})
+
+    steps = []
+
+    # Step 1: Generate a short test audio (2 sec of speech-like noise)
+    try:
+        tmp = tempfile.mktemp(suffix=".wav")
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i",
+             "anoisesrc=d=2:c=pink:r=16000:a=0.5",
+             "-ar", "16000", "-ac", "1", tmp],
+            capture_output=True, timeout=10,
+        )
+        steps.append({"step": "test_audio", "ok": True, "msg": "Test audio created"})
+    except Exception as e:
+        return jsonify({"ok": False, "step": "test_audio", "error": str(e), "steps": steps})
+
+    # Step 2: Load audio via ffmpeg
+    try:
+        audio_input = _load_audio_waveform(tmp)
+        shape = list(audio_input["waveform"].shape)
+        steps.append({"step": "audio_load", "ok": True, "msg": f"Audio loaded: {shape}, sr={audio_input['sample_rate']}"})
+    except Exception as e:
+        os.unlink(tmp)
+        return jsonify({"ok": False, "step": "audio_load", "error": str(e), "steps": steps})
+
+    # Step 3: Load diarization pipeline
+    try:
+        pipeline = get_diarization_pipeline(hf_token)
+        device = "unknown"
+        try:
+            device = str(next(pipeline.parameters()).device)
+        except Exception:
+            pass
+        steps.append({"step": "pipeline_load", "ok": True, "msg": f"Pipeline loaded on {device}"})
+    except Exception as e:
+        os.unlink(tmp)
+        err = str(e)
+        hint = ""
+        if "403" in err or "gated" in err.lower() or "access" in err.lower():
+            hint = " — You must accept the model license at https://huggingface.co/pyannote/speaker-diarization-community-1"
+        elif "401" in err or "unauthorized" in err.lower():
+            hint = " — Invalid HuggingFace token"
+        return jsonify({"ok": False, "step": "pipeline_load", "error": err + hint, "steps": steps})
+
+    # Step 4: Run diarization
+    try:
+        output = pipeline(audio_input)
+        # pyannote.audio 4.x: use exclusive_speaker_diarization (one speaker at a time)
+        speakers = []
+        if hasattr(output, 'exclusive_speaker_diarization'):
+            for turn, speaker in output.exclusive_speaker_diarization:
+                speakers.append({"start": round(turn.start, 2), "end": round(turn.end, 2), "speaker": speaker})
+        elif hasattr(output, 'speaker_diarization'):
+            for turn, speaker in output.speaker_diarization:
+                speakers.append({"start": round(turn.start, 2), "end": round(turn.end, 2), "speaker": speaker})
+        else:
+            # Legacy pyannote 3.x fallback
+            for turn, _, speaker in output.itertracks(yield_label=True):
+                speakers.append({"start": round(turn.start, 2), "end": round(turn.end, 2), "speaker": speaker})
+        n = len(set(s["speaker"] for s in speakers))
+        if n == 0:
+            steps.append({"step": "diarize", "ok": True, "msg": "Pipeline ran OK. 0 speakers in test audio (expected — test audio is noise, not speech)"})
+        else:
+            steps.append({"step": "diarize", "ok": True, "msg": f"Diarization complete: {n} speaker(s), {len(speakers)} segment(s)", "segments": speakers})
+    except Exception as e:
+        os.unlink(tmp)
+        return jsonify({"ok": False, "step": "diarize", "error": str(e), "steps": steps})
+
+    os.unlink(tmp)
+    return jsonify({"ok": True, "steps": steps})
+
+
 @app.route("/api/status")
 def api_status():
     """Return loaded models and their device info, plus CUDA availability."""
     cuda = check_cuda()
+    gpu = _detect_nvidia_gpu()
+    vram_total = gpu["vram_mb"] if gpu else 0
+    vram_free = _get_gpu_free_vram_mb() if cuda else 0
     return jsonify({
         "loaded_models": {name: _model_devices.get(name, "unknown") for name in _whisper_models},
         "available_models": LOCAL_MODELS,
@@ -460,6 +733,9 @@ def api_status():
         "default_device": "cuda" if cuda else "cpu",
         "correction_models": CORRECTION_MODELS,
         "openrouter_correction_models": OPENROUTER_CORRECTION_MODELS,
+        "vram_total_mb": vram_total,
+        "vram_free_mb": vram_free,
+        "model_vram_mb": MODEL_VRAM_MB,
     })
 
 
@@ -724,6 +1000,7 @@ def transcribe():
     _job_start = __import__("time").time()
 
     def generate():
+        audio_id = None
         try:
             client = None
             local_model = None
@@ -743,17 +1020,65 @@ def transcribe():
             yield sse_event("progress", {"step": "extract", "pct": 5, "msg": "Extracting audio..."})
             audio_path = os.path.join(tmp_dir, "audio.mp3")
             extract_audio(input_path, audio_path)
+            # Save a copy for playback (persists after tmp_dir cleanup)
+            import uuid as _uuid
+            audio_id = str(_uuid.uuid4())[:12]
+            os.makedirs(_AUDIO_DIR, exist_ok=True)
+            playback_path = os.path.join(_AUDIO_DIR, f"{audio_id}.mp3")
+            shutil.copy2(audio_path, playback_path)
+            # Send audio_id immediately so frontend can enable playback even if later steps fail
+            yield sse_event("audio_ready", {"audio_id": audio_id})
 
-            # Step 1.5: Speaker diarization (local mode only)
+            # Step 1.5: Speaker diarization (local mode only, inline chunked)
             diarization_result = None
             if diarize_enabled and use_local:
                 yield sse_event("progress", {"step": "diarize", "pct": 8, "msg": "Loading speaker diarization model..."})
                 try:
-                    yield sse_event("progress", {"step": "diarize", "pct": 10, "msg": "Identifying speakers..."})
-                    diarization_result = run_diarization(audio_path, hf_token, num_speakers)
+                    import torch as _torch
+                    diar_pipeline = get_diarization_pipeline(hf_token)
+                    yield sse_event("progress", {"step": "diarize", "pct": 9, "msg": "Loading audio for diarization..."})
+                    diar_audio = _load_audio_waveform(audio_path)
+                    total_samples = diar_audio["waveform"].shape[1]
+                    sr = diar_audio["sample_rate"]
+                    total_dur = total_samples / sr
+                    diar_kwargs = {}
+                    if num_speakers and num_speakers > 0:
+                        diar_kwargs["num_speakers"] = num_speakers
+
+                    diarization_result = []
+                    chunk_sec = DIARIZE_CHUNK_SEC
+                    chunk_samples = chunk_sec * sr
+                    n_chunks = max(1, math.ceil(total_samples / chunk_samples))
+
+                    for ci in range(n_chunks):
+                        start_s = ci * chunk_samples
+                        end_s = min(start_s + chunk_samples, total_samples)
+                        offset_sec = start_s / sr
+                        pct = 10 + int((ci / n_chunks) * 8)
+                        yield sse_event("progress", {"step": "diarize", "pct": pct, "msg": f"Identifying speakers: chunk {ci+1}/{n_chunks} ({offset_sec/60:.0f}-{end_s/sr/60:.0f} min)..."})
+
+                        chunk_input = {"waveform": diar_audio["waveform"][:, start_s:end_s], "sample_rate": sr}
+                        # Use num_speakers only for single-chunk (whole file)
+                        kw = diar_kwargs if n_chunks == 1 else {}
+                        output = diar_pipeline(chunk_input, **kw)
+                        chunk_segs = _extract_diarization_segments(output)
+                        print(f"    Diarize chunk {ci+1}/{n_chunks} ({offset_sec:.0f}s-{end_s/sr:.0f}s): {len(chunk_segs)} segments, {len(set(s for _,_,s in chunk_segs))} speakers")
+
+                        for s_start, s_end, spk in chunk_segs:
+                            diarization_result.append((s_start + offset_sec, s_end + offset_sec, spk))
+
+                        del chunk_input, output
+                        if _torch.cuda.is_available():
+                            _torch.cuda.empty_cache()
+
+                    del diar_audio
                     n_speakers = len(set(s for _, _, s in diarization_result))
-                    yield sse_event("progress", {"step": "diarize", "pct": 18, "msg": f"Found {n_speakers} speaker(s). Starting transcription..."})
+                    speaker_names = [_friendly_speaker_label(s) for s in sorted(set(s for _, _, s in diarization_result))]
+                    yield sse_event("progress", {"step": "diarize", "pct": 18, "msg": f"Found {n_speakers} speaker(s) in {len(diarization_result)} segments: {', '.join(speaker_names)}. Starting transcription..."})
+                    print(f"  Diarization total: {len(diarization_result)} segments, {n_speakers} speakers: {speaker_names}")
                 except Exception as e:
+                    import traceback
+                    print(f"  Diarization FAILED: {traceback.format_exc()}")
                     yield sse_event("progress", {"step": "diarize", "pct": 18, "msg": f"Diarization failed: {e}. Continuing without speaker labels..."})
 
             # Step 2: Split (only needed for OpenAI due to size limits)
@@ -792,9 +1117,20 @@ def transcribe():
                     })
 
                 # Assign speaker labels from diarization
+                print(f"  Diarization result: {len(diarization_result) if diarization_result else 0} segments, Transcription: {len(all_segments)} segments")
                 if diarization_result and all_segments:
                     yield sse_event("progress", {"step": "assign_speakers", "pct": 91, "msg": "Assigning speaker labels..."})
                     all_segments = assign_speakers(all_segments, diarization_result)
+                    print(f"  Speakers assigned: {set(s['speaker'] for s in all_segments)}")
+                    # Re-emit segments with correct speaker labels so frontend can update live preview
+                    updated_lines = []
+                    for seg in all_segments:
+                        ts = f"[{format_timestamp(seg['start'])} -> {format_timestamp(seg['end'])}]"
+                        updated_lines.append(f"{ts}  {seg['speaker']}: {seg['text']}")
+                    yield sse_event("speakers_assigned", {
+                        "segments": all_segments,
+                        "lines": updated_lines,
+                    })
             else:
                 # OpenAI: chunk-based, stream segments as each chunk completes
                 audio_duration = get_duration(audio_path)
@@ -829,30 +1165,37 @@ def transcribe():
             yield sse_event("progress", {"step": "merge", "pct": merge_pct, "msg": "Merging results..."})
             merged = merge_segments(all_segments)
 
-            # Step 5: AI Correction (optional)
+            # Step 5: AI Correction (optional, errors don't abort transcription)
             if correction_enabled and merged:
-                correction_client = _make_client(correction_api_key, correction_provider)
-                total_segs = len(merged)
-                num_batches = math.ceil(total_segs / CORRECTION_BATCH_SIZE)
-                yield sse_event("progress", {
-                    "step": "correct", "pct": 87,
-                    "msg": f"AI correcting with {correction_model} (0/{num_batches} batches)...",
-                })
-                for b in range(num_batches):
-                    start_i = b * CORRECTION_BATCH_SIZE
-                    end_i = min(start_i + CORRECTION_BATCH_SIZE, total_segs)
-                    batch = merged[start_i:end_i]
-                    corrected = correct_segments_batch(
-                        correction_client, batch, correction_model, b, num_batches
-                    )
-                    for local_idx, new_text in corrected.items():
-                        global_idx = start_i + local_idx
-                        if 0 <= global_idx < total_segs:
-                            merged[global_idx]["text"] = new_text
-                    pct = 87 + int(((b + 1) / num_batches) * 10)
+                try:
+                    correction_client = _make_client(correction_api_key, correction_provider)
+                    total_segs = len(merged)
+                    num_batches = math.ceil(total_segs / CORRECTION_BATCH_SIZE)
                     yield sse_event("progress", {
-                        "step": "correct", "pct": pct,
-                        "msg": f"AI correcting with {correction_model} ({b + 1}/{num_batches} batches)...",
+                        "step": "correct", "pct": 87,
+                        "msg": f"AI correcting with {correction_model} (0/{num_batches} batches)...",
+                    })
+                    for b in range(num_batches):
+                        start_i = b * CORRECTION_BATCH_SIZE
+                        end_i = min(start_i + CORRECTION_BATCH_SIZE, total_segs)
+                        batch = merged[start_i:end_i]
+                        corrected = correct_segments_batch(
+                            correction_client, batch, correction_model, b, num_batches
+                        )
+                        for local_idx, new_text in corrected.items():
+                            global_idx = start_i + local_idx
+                            if 0 <= global_idx < total_segs:
+                                merged[global_idx]["text"] = new_text
+                        pct = 87 + int(((b + 1) / num_batches) * 10)
+                        yield sse_event("progress", {
+                            "step": "correct", "pct": pct,
+                            "msg": f"AI correcting with {correction_model} ({b + 1}/{num_batches} batches)...",
+                        })
+                except Exception as corr_err:
+                    print(f"  Correction error (non-fatal): {corr_err}")
+                    yield sse_event("progress", {
+                        "step": "correct", "pct": 97,
+                        "msg": f"Correction failed: {corr_err}. Using uncorrected transcription.",
                     })
 
             # Build output
@@ -887,9 +1230,13 @@ def transcribe():
                 "full_text": " ".join(full_text),
                 "segments": merged,
                 "chunk_count": total if not use_local else 1,
+                "audio_id": audio_id,
             })
 
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"  TRANSCRIPTION ERROR: {tb}")
             write_log({
                 "ts": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "file": file.filename,
@@ -902,7 +1249,7 @@ def transcribe():
                 "elapsed_sec": round(__import__("time").time() - _job_start, 1),
                 "status": f"error: {e}",
             })
-            yield sse_event("error", {"error": str(e)})
+            yield sse_event("error", {"error": f"{e}\n\nTraceback:\n{tb}"})
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 

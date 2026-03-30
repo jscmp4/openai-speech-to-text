@@ -461,6 +461,17 @@
     line-height: 1.8;
     color: #ccc;
   }
+  .play-btn {
+    cursor: pointer;
+    color: #4a9eff;
+    font-size: 13px;
+    opacity: 0.7;
+    transition: opacity 0.15s;
+    user-select: none;
+    padding: 0 2px;
+  }
+  .play-btn:hover { opacity: 1; color: #6ab4ff; }
+  .seg-line { transition: background 0.2s; border-radius: 3px; padding: 1px 3px; }
   .speaker-label {
     color: #4a9eff;
     cursor: pointer;
@@ -545,11 +556,13 @@
     <select class="model-select" id="modelSelect" onchange="onModelChange()">
       <option value="openai">OpenAI API (gpt-4o-transcribe-diarize)</option>
       <optgroup label="Local Models (faster-whisper)">
-        <option value="tiny">tiny - Fastest, lowest accuracy</option>
-        <option value="base">base - Fast, basic accuracy</option>
-        <option value="small">small - Balanced speed/accuracy</option>
-        <option value="medium">medium - Good accuracy, slower</option>
-        <option value="large-v3">large-v3 - Best accuracy, slowest</option>
+        <option value="tiny">tiny — fastest, lowest accuracy (~0.4 GB)</option>
+        <option value="base">base — fast, basic accuracy (~0.5 GB)</option>
+        <option value="small">small — balanced speed/accuracy (~1 GB)</option>
+        <option value="medium">medium — good accuracy (~2.5 GB)</option>
+        <option value="large-v3-turbo">large-v3-turbo — fast + accurate (~2.5 GB) ★ recommended</option>
+        <option value="distil-large-v3.5">distil-large-v3.5 — fastest large, English only (~2.4 GB)</option>
+        <option value="large-v3">large-v3 — best accuracy, slowest (~4.5 GB)</option>
       </optgroup>
     </select>
     <div class="device-row" id="deviceRow" style="display:none; margin-top: 12px;">
@@ -568,8 +581,12 @@
   <div class="api-section" id="apiSection">
     <label>API Provider</label>
     <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-      <button class="provider-btn active" id="providerOpenai" onclick="setProvider('openai')">OpenAI</button>
-      <button class="provider-btn" id="providerOpenrouter" onclick="setProvider('openrouter')">OpenRouter</button>
+      <button class="provider-btn active" id="providerOpenai" onclick="setProvider('openai')">
+        OpenAI <span id="providerOpenaiKey" style="font-size:10px; opacity:0.6;"></span>
+      </button>
+      <button class="provider-btn" id="providerOpenrouter" onclick="setProvider('openrouter')">
+        OpenRouter <span id="providerOpenrouterKey" style="font-size:10px; opacity:0.6;"></span>
+      </button>
     </div>
     <label id="apiKeyLabel">OpenAI API Key</label>
     <div class="api-row">
@@ -588,10 +605,13 @@
   <div class="correction-section" id="diarizeSection">
     <div class="correction-header">
       <label>Speaker Diarization (who is speaking)</label>
-      <label class="toggle-switch">
-        <input type="checkbox" id="diarizeToggle" onchange="onDiarizeChange()">
-        <span class="toggle-slider"></span>
-      </label>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span id="diarizeStatusBadge" style="display:none; font-size:11px; padding:2px 8px; border-radius:10px; white-space:nowrap;"></span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="diarizeToggle" onchange="onDiarizeChange()">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
     </div>
     <div class="correction-options" id="diarizeOptions" style="display:none; margin-top: 12px;">
       <label>HuggingFace Token</label>
@@ -602,7 +622,7 @@
       <div id="hfTokenStatus" style="font-size: 11px; margin-bottom: 8px; height: 14px;"></div>
       <div style="font-size: 11px; color: #555; margin-bottom: 10px;">
         Free token from <a href="https://huggingface.co/settings/tokens" target="_blank" style="color:#4a9eff">huggingface.co/settings/tokens</a>.
-        You must also accept the <a href="https://huggingface.co/pyannote/speaker-diarization-3.1" target="_blank" style="color:#4a9eff">model license</a> (click "Agree" on the model page).
+        You must also accept the <a href="https://huggingface.co/pyannote/speaker-diarization-community-1" target="_blank" style="color:#4a9eff">model license</a> (click "Agree" on the model page).
       </div>
       <label>Number of Speakers (optional)</label>
       <select class="model-select" id="numSpeakers" style="margin-bottom: 8px;">
@@ -614,6 +634,8 @@
         <option value="6">6 speakers</option>
       </select>
       <div class="correction-hint">Identifies different speakers in audio. Only works with local models. First run downloads ~2GB model.</div>
+      <button id="btnTestDiarize" onclick="testDiarization()" style="margin-top:8px; padding:4px 12px; font-size:12px; cursor:pointer; background:#2a2a3a; color:#aaf; border:1px solid #445; border-radius:4px;">Test Diarization Pipeline</button>
+      <div id="diarizeTestResult" style="font-size:11px; margin-top:6px; white-space:pre-wrap;"></div>
     </div>
   </div>
 
@@ -729,6 +751,9 @@ let allResults = []; // for batch: [{name, formatted, full_text, segments}]
 let currentProvider = 'openai';
 let currentCorrProvider = 'openai';
 let speakerNames = {}; // e.g. {"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"}
+let audioPlayer = null; // HTML5 Audio element for segment playback
+let currentAudioId = null; // audio ID for playback endpoint
+let playingSegIdx = null; // currently playing segment index
 
 // Featured models shown before full list loads from API
 let OPENROUTER_MODELS = [
@@ -833,8 +858,9 @@ window.addEventListener('DOMContentLoaded', () => {
 
   onModelChange();
   onCorrectionChange();
-  onDiarizeChange();
+  onDiarizeChange(); // this will verify HF token if diarize is enabled
   loadHistory();
+  updateProviderKeyBadges();
 
   // Show saved key status & auto-verify
   const apiKey = keyInput.value.trim();
@@ -902,6 +928,7 @@ function setProvider(prov, skipSave) {
 
   // Update model selector - hide OpenAI transcription if using OpenRouter
   onModelChange();
+  updateProviderKeyBadges();
 }
 
 function setCorrectionProvider(prov, skipSave) {
@@ -1117,18 +1144,47 @@ function onModelChange() {
     badge.textContent = 'Cloud API';
     deviceRow.style.display = 'none';
   } else {
-    hint.textContent = `Local model "${model}" runs on your machine. No API key needed. First use will download the model.`;
+    let extra = '';
+    if (model === 'large-v3-turbo') extra = ' 5x faster than large-v3 with similar accuracy.';
+    else if (model === 'distil-large-v3.5') extra = ' Fastest large model. English only.';
+    hint.textContent = `Local model "${model}" runs on your machine. No API key needed.${extra} First use will download the model.`;
     deviceRow.style.display = 'block';
     fetchDeviceStatus(model);
+    // Show VRAM fit indicator
+    updateVramHint(model);
   }
   // Show/hide diarization section based on local vs cloud
-  const isLocal = ['tiny','base','small','medium','large-v3'].includes(model);
+  const isLocal = ['tiny','base','small','medium','large-v3','large-v3-turbo','distil-large-v3.5'].includes(model);
   document.getElementById('diarizeSection').style.display = isLocal ? '' : 'none';
   updateTranscribeBtn();
 }
 
 function onDeviceChange() {
   localStorage.setItem('stt_device', document.getElementById('deviceSelect').value);
+}
+
+let _cachedVramInfo = null;
+function updateVramHint(model) {
+  const hint = document.getElementById('modelHint');
+  const doUpdate = (info) => {
+    if (!info || !info.vram_total_mb || !info.cuda_available) return;
+    const needed = (info.model_vram_mb || {})[model];
+    if (!needed) return;
+    const free = info.vram_free_mb || 0;
+    const total = info.vram_total_mb;
+    if (free >= needed + 500) {
+      hint.textContent += ` GPU OK (${needed}MB needed, ${free}MB free of ${total}MB).`;
+    } else if (free >= needed * 0.6 + 500) {
+      hint.textContent += ` GPU OK with int8 quantization (${needed}MB fp16 → ~${Math.round(needed*0.6)}MB int8, ${free}MB free).`;
+    } else {
+      hint.textContent += ` ⚠ May not fit GPU (${needed}MB needed, ${free}MB free). Will auto-fallback to CPU.`;
+    }
+  };
+  if (_cachedVramInfo) { doUpdate(_cachedVramInfo); return; }
+  fetch('/api/status').then(r => r.json()).then(data => {
+    _cachedVramInfo = data;
+    doUpdate(data);
+  }).catch(() => {});
 }
 
 function fetchDeviceStatus(model) {
@@ -1233,8 +1289,20 @@ function onDiarizeChange() {
   localStorage.setItem('stt_diarize', enabled ? '1' : '0');
   // Only show diarization section for local models
   const modelType = document.getElementById('modelSelect').value;
-  const isLocal = ['tiny','base','small','medium','large-v3'].includes(modelType);
+  const isLocal = ['tiny','base','small','medium','large-v3','large-v3-turbo','distil-large-v3.5'].includes(modelType);
   document.getElementById('diarizeSection').style.display = isLocal ? '' : 'none';
+  // Update badge
+  if (enabled) {
+    const token = document.getElementById('hfToken').value.trim() || localStorage.getItem('stt_hf_token');
+    if (token) {
+      updateDiarizeBadge('checking');
+      verifyHfToken(token);
+    } else {
+      updateDiarizeBadge(null);
+    }
+  } else {
+    document.getElementById('diarizeStatusBadge').style.display = 'none';
+  }
 }
 
 function saveHfToken() {
@@ -1242,12 +1310,102 @@ function saveHfToken() {
   const status = document.getElementById('hfTokenStatus');
   if (token) {
     localStorage.setItem('stt_hf_token', token);
-    status.textContent = '✓ Token saved';
-    status.style.color = '#6c6';
+    status.textContent = 'Verifying token...';
+    status.style.color = '#aaa';
+    verifyHfToken(token);
   } else {
     localStorage.removeItem('stt_hf_token');
     status.textContent = '';
+    updateDiarizeBadge(null);
   }
+}
+
+function verifyHfToken(token) {
+  const status = document.getElementById('hfTokenStatus');
+  fetch('/api/verify-hf-token', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({token}),
+  }).then(r => r.json()).then(data => {
+    if (data.valid) {
+      status.textContent = '✓ Token verified — model access confirmed';
+      status.style.color = '#6c6';
+      updateDiarizeBadge('ready');
+    } else {
+      status.textContent = '✗ ' + data.error;
+      status.style.color = '#e66';
+      updateDiarizeBadge('error');
+    }
+  }).catch(() => {
+    status.textContent = '✓ Token saved (verification offline)';
+    status.style.color = '#da6';
+    updateDiarizeBadge('unknown');
+  });
+}
+
+function updateDiarizeBadge(state) {
+  const badge = document.getElementById('diarizeStatusBadge');
+  const toggle = document.getElementById('diarizeToggle');
+  if (!toggle.checked) { badge.style.display = 'none'; return; }
+  const token = document.getElementById('hfToken').value.trim() || localStorage.getItem('stt_hf_token');
+  if (!token) {
+    badge.textContent = 'No token';
+    badge.style.cssText = 'display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px; white-space:nowrap; background:#553; color:#da6;';
+    return;
+  }
+  if (state === 'ready') {
+    badge.textContent = 'Ready';
+    badge.style.cssText = 'display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px; white-space:nowrap; background:#253; color:#6c6;';
+  } else if (state === 'error') {
+    badge.textContent = 'Token error';
+    badge.style.cssText = 'display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px; white-space:nowrap; background:#533; color:#e66;';
+  } else if (state === 'checking') {
+    badge.textContent = 'Checking...';
+    badge.style.cssText = 'display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px; white-space:nowrap; background:#335; color:#aaf;';
+  } else {
+    badge.textContent = 'Token saved';
+    badge.style.cssText = 'display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px; white-space:nowrap; background:#353; color:#6c6;';
+  }
+}
+
+async function testDiarization() {
+  const btn = document.getElementById('btnTestDiarize');
+  const el = document.getElementById('diarizeTestResult');
+  const token = document.getElementById('hfToken').value.trim() || localStorage.getItem('stt_hf_token') || '';
+  if (!token) { el.textContent = '✗ No HuggingFace token'; el.style.color = '#e66'; return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Testing...';
+  el.textContent = 'Loading pipeline & running test (first time downloads ~2GB model)...';
+  el.style.color = '#aaa';
+
+  try {
+    const resp = await fetch('/api/test-diarization', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token}),
+    });
+    const data = await resp.json();
+    let msg = '';
+    for (const s of (data.steps || [])) {
+      msg += (s.ok ? '✓' : '✗') + ' ' + s.msg + '\n';
+    }
+    if (data.ok) {
+      msg += '\n✓ Diarization pipeline works!';
+      el.style.color = '#6c6';
+      updateDiarizeBadge('ready');
+    } else {
+      msg += '✗ Failed at: ' + data.step + '\n  ' + data.error;
+      el.style.color = '#e66';
+      updateDiarizeBadge('error');
+    }
+    el.textContent = msg;
+  } catch (e) {
+    el.textContent = '✗ Request failed: ' + e.message;
+    el.style.color = '#e66';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Test Diarization Pipeline';
 }
 
 function updateTranscribeBtn() {
@@ -1268,6 +1426,16 @@ function saveAndVerifyApiKey() {
   el.style.display = 'block';
   setTimeout(() => el.style.display = 'none', 3000);
   verifyApiKey(key);
+  updateProviderKeyBadges();
+}
+
+function updateProviderKeyBadges() {
+  const openaiKey = localStorage.getItem('openai_api_key') || '';
+  const openrouterKey = localStorage.getItem('openrouter_api_key') || '';
+  const oaiBadge = document.getElementById('providerOpenaiKey');
+  const orBadge = document.getElementById('providerOpenrouterKey');
+  oaiBadge.textContent = openaiKey ? '(…' + openaiKey.slice(-4) + ')' : '';
+  orBadge.textContent = openrouterKey ? '(…' + openrouterKey.slice(-4) + ')' : '';
 }
 
 function verifyApiKey(key) {
@@ -1282,7 +1450,8 @@ function verifyApiKey(key) {
   }).then(r => r.json()).then(data => {
     if (data.valid) {
       status.className = 'api-status valid';
-      status.textContent = 'API key verified (' + currentProvider + ')';
+      const masked = key.length > 10 ? key.slice(0, 6) + '…' + key.slice(-4) : '***';
+      status.textContent = '✓ ' + currentProvider + ' key verified: ' + masked;
     } else {
       status.className = 'api-status invalid';
       status.textContent = 'Invalid API key: ' + (data.error || 'unknown error');
@@ -1447,7 +1616,7 @@ async function startBatchTranscribe() {
       }
     }
     // Diarization params
-    if (document.getElementById('diarizeToggle').checked && ['tiny','base','small','medium','large-v3'].includes(model)) {
+    if (document.getElementById('diarizeToggle').checked && ['tiny','base','small','medium','large-v3','large-v3-turbo','distil-large-v3.5'].includes(model)) {
       formData.append('diarize', '1');
       const hfToken = document.getElementById('hfToken').value.trim() || localStorage.getItem('stt_hf_token') || '';
       if (hfToken) formData.append('hf_token', hfToken);
@@ -1485,8 +1654,17 @@ async function startBatchTranscribe() {
               setProgress(data.pct, `Transcribing... ${streamingSegments.length} segments | ${data.elapsed} / ${data.total}`);
               // Live preview
               showLiveResult(file.name, fi, totalFiles, streamingLines, streamingSegments);
+            } else if (eventType === 'speakers_assigned') {
+              // Replace streaming data with speaker-labeled segments
+              streamingSegments = data.segments;
+              streamingLines = data.lines;
+              showLiveResult(file.name, fi, totalFiles, streamingLines, streamingSegments);
+            } else if (eventType === 'audio_ready') {
+              currentAudioId = data.audio_id;
+              console.log('Audio ready:', data.audio_id);
             } else if (eventType === 'result') {
               fileResult = data;
+              if (data.audio_id) currentAudioId = data.audio_id;
             } else if (eventType === 'error') {
               throw new Error(data.error);
             }
@@ -1501,7 +1679,7 @@ async function startBatchTranscribe() {
         full_text: streamingSegments.map(s => s.text).join(' '),
         segments: streamingSegments,
       };
-      allResults.push({ name: file.name, ...res });
+      allResults.push({ name: file.name, audio_id: currentAudioId, ...res });
       setFileStatus(fi, 'done', 'done');
 
     } catch (err) {
@@ -1509,6 +1687,7 @@ async function startBatchTranscribe() {
       if (streamingSegments.length > 0) {
         allResults.push({
           name: file.name,
+          audio_id: currentAudioId,
           formatted: streamingLines.join('\n\n'),
           full_text: streamingSegments.map(s => s.text).join(' '),
           segments: streamingSegments,
@@ -1566,6 +1745,10 @@ function showCombinedResults() {
 
   resultData = { success: true, formatted, full_text: plain, segments };
   speakerNames = {}; // Reset speaker names for new results
+  // audio_id comes from the last processed file's result
+  if (allResults.length > 0 && allResults[allResults.length - 1].audio_id) {
+    currentAudioId = allResults[allResults.length - 1].audio_id;
+  }
   renderFormatted();
   document.getElementById('resultPlain').textContent = plain;
   document.getElementById('resultJson').textContent = JSON.stringify(segments, null, 2);
@@ -1619,20 +1802,72 @@ function getSpeakerDisplay(raw) {
 function renderFormatted() {
   const el = document.getElementById('resultFormatted');
   if (!resultData.formatted) { el.innerHTML = ''; return; }
-  // Parse each line: [timestamp]  SPEAKER: text
+  const segs = resultData.segments || [];
+  let segIdx = 0;
   const html = resultData.formatted.split('\n').map(line => {
-    // Match lines like: [00:00:00.00 -> 00:01:23.45]  SPEAKER_00: Hello world
-    // Or: === filename === (file headers)
-    const m = line.match(/^(\[[\d:.]+\s*->\s*[\d:.]+\])\s+(\S+?):\s(.*)$/);
+    const m = line.match(/^(\[[\d:.]+\s*->\s*[\d:.]+\])\s+(.+?):\s(.*)$/);
     if (m) {
       const ts = m[1], rawSpeaker = m[2], text = m[3];
       const display = getSpeakerDisplay(rawSpeaker);
       const escaped = text.replace(/&/g,'&amp;').replace(/</g,'&lt;');
-      return `<span style="color:#666">${ts}</span>  <span class="speaker-label" data-speaker="${rawSpeaker}" onclick="renameSpeaker('${rawSpeaker}')">${display}</span>: ${escaped}`;
+      const escapedSpeaker = rawSpeaker.replace(/'/g, "\\'");
+      const si = segIdx++;
+      const playBtn = currentAudioId ? `<span class="play-btn" data-seg="${si}" onclick="playSegment(${si})" title="Play this segment">&#9654;</span> ` : '';
+      return `<span class="seg-line" data-seg="${si}">${playBtn}<span style="color:#666">${ts}</span>  <span class="speaker-label" data-speaker="${rawSpeaker}" onclick="renameSpeaker('${escapedSpeaker}')">${display}</span>: ${escaped}</span>`;
     }
     return line.replace(/&/g,'&amp;').replace(/</g,'&lt;');
   }).join('\n');
   el.innerHTML = html;
+}
+
+function playSegment(segIdx) {
+  const segs = resultData.segments;
+  if (!segs || !segs[segIdx] || !currentAudioId) return;
+  const seg = segs[segIdx];
+
+  // Create or reuse audio player
+  if (!audioPlayer || audioPlayer._audioId !== currentAudioId) {
+    if (audioPlayer) { audioPlayer.pause(); audioPlayer.src = ''; }
+    audioPlayer = new Audio('/audio/' + currentAudioId);
+    audioPlayer._audioId = currentAudioId;
+    audioPlayer.addEventListener('timeupdate', () => {
+      if (playingSegIdx !== null) {
+        const s = segs[playingSegIdx];
+        if (s && audioPlayer.currentTime >= s.end) {
+          audioPlayer.pause();
+          setPlayingState(playingSegIdx, false);
+          playingSegIdx = null;
+        }
+      }
+    });
+  }
+
+  // Toggle: if same segment is playing, stop it
+  if (playingSegIdx === segIdx && !audioPlayer.paused) {
+    audioPlayer.pause();
+    setPlayingState(segIdx, false);
+    playingSegIdx = null;
+    return;
+  }
+
+  // Stop previous
+  if (playingSegIdx !== null) setPlayingState(playingSegIdx, false);
+
+  // Play new segment
+  playingSegIdx = segIdx;
+  audioPlayer.currentTime = seg.start;
+  setPlayingState(segIdx, true);
+  audioPlayer.play().catch(() => {});
+}
+
+function setPlayingState(segIdx, playing) {
+  const btn = document.querySelector(`.play-btn[data-seg="${segIdx}"]`);
+  if (btn) {
+    btn.innerHTML = playing ? '&#9632;' : '&#9654;';
+    btn.style.color = playing ? '#ff6b6b' : '';
+  }
+  const line = document.querySelector(`.seg-line[data-seg="${segIdx}"]`);
+  if (line) line.style.background = playing ? 'rgba(74,158,255,0.08)' : '';
 }
 
 function renameSpeaker(rawSpeaker) {
