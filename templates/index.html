@@ -461,6 +461,28 @@
     line-height: 1.8;
     color: #ccc;
   }
+  .speaker-label {
+    color: #4a9eff;
+    cursor: pointer;
+    border-bottom: 1px dashed #4a9eff44;
+    transition: all 0.15s;
+  }
+  .speaker-label:hover {
+    color: #6ab4ff;
+    border-bottom-color: #6ab4ff;
+    background: #4a9eff11;
+  }
+  .speaker-rename-input {
+    background: #1a1a1a;
+    border: 1px solid #4a9eff;
+    color: #fff;
+    padding: 2px 6px;
+    font-size: 12px;
+    border-radius: 4px;
+    outline: none;
+    width: 120px;
+    font-family: inherit;
+  }
   .result-actions {
     padding: 16px 24px;
     border-top: 1px solid #2a2a2a;
@@ -703,6 +725,7 @@ let resultData = {};
 let allResults = []; // for batch: [{name, formatted, full_text, segments}]
 let currentProvider = 'openai';
 let currentCorrProvider = 'openai';
+let speakerNames = {}; // e.g. {"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"}
 
 // Featured models shown before full list loads from API
 let OPENROUTER_MODELS = [
@@ -1492,7 +1515,8 @@ function showLiveResult(fileName, fileIdx, totalFiles, lines, segments) {
   plain += segments.map(s => s.text).join(' ');
 
   document.getElementById('resultArea').style.display = 'block';
-  document.getElementById('resultFormatted').textContent = formatted.trim();
+  resultData.formatted = formatted.trim();
+  renderFormatted();
   document.getElementById('resultPlain').textContent = plain.trim();
   const content = document.querySelector('.result-content');
   content.scrollTop = content.scrollHeight;
@@ -1515,7 +1539,8 @@ function showCombinedResults() {
   }
 
   resultData = { success: true, formatted, full_text: plain, segments };
-  document.getElementById('resultFormatted').textContent = formatted;
+  speakerNames = {}; // Reset speaker names for new results
+  renderFormatted();
   document.getElementById('resultPlain').textContent = plain;
   document.getElementById('resultJson').textContent = JSON.stringify(segments, null, 2);
   document.getElementById('resultArea').style.display = 'block';
@@ -1559,6 +1584,88 @@ function copyResult() {
     btn.textContent = 'Copied!';
     setTimeout(() => btn.textContent = 'Copy', 1500);
   });
+}
+
+function getSpeakerDisplay(raw) {
+  return speakerNames[raw] || raw;
+}
+
+function renderFormatted() {
+  const el = document.getElementById('resultFormatted');
+  if (!resultData.formatted) { el.innerHTML = ''; return; }
+  // Parse each line: [timestamp]  SPEAKER: text
+  const html = resultData.formatted.split('\n').map(line => {
+    // Match lines like: [00:00:00.00 -> 00:01:23.45]  SPEAKER_00: Hello world
+    // Or: === filename === (file headers)
+    const m = line.match(/^(\[[\d:.]+\s*->\s*[\d:.]+\])\s+(\S+?):\s(.*)$/);
+    if (m) {
+      const ts = m[1], rawSpeaker = m[2], text = m[3];
+      const display = getSpeakerDisplay(rawSpeaker);
+      const escaped = text.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      return `<span style="color:#666">${ts}</span>  <span class="speaker-label" data-speaker="${rawSpeaker}" onclick="renameSpeaker('${rawSpeaker}')">${display}</span>: ${escaped}`;
+    }
+    return line.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  }).join('\n');
+  el.innerHTML = html;
+}
+
+function renameSpeaker(rawSpeaker) {
+  const current = speakerNames[rawSpeaker] || rawSpeaker;
+  const newName = prompt(`Rename "${current}" to:`, current);
+  if (newName === null || newName.trim() === '') return;
+  const trimmed = newName.trim();
+
+  // Save mapping
+  speakerNames[rawSpeaker] = trimmed;
+
+  // Update all segments in allResults
+  for (const r of allResults) {
+    if (r.segments) {
+      for (const seg of r.segments) {
+        if (seg.speaker === rawSpeaker) seg.speaker = trimmed;
+      }
+    }
+  }
+
+  // Rebuild formatted text with new names
+  rebuildFormattedText();
+
+  // Re-render
+  renderFormatted();
+  // Also update plain text and JSON
+  updatePlainAndJson();
+}
+
+function rebuildFormattedText() {
+  if (allResults.length === 0) return;
+  for (const r of allResults) {
+    if (!r.segments) continue;
+    r.formatted = r.segments.map(seg => {
+      const ts = `[${formatTs(seg.start)} -> ${formatTs(seg.end)}]`;
+      return `${ts}  ${seg.speaker}: ${seg.text.trim()}`;
+    }).join('\n\n');
+    r.full_text = r.segments.map(s => s.text.trim()).join(' ');
+  }
+  if (allResults.length === 1) {
+    resultData.formatted = allResults[0].formatted;
+    resultData.full_text = allResults[0].full_text;
+  } else {
+    resultData.formatted = allResults.map(r => `=== ${r.name} ===\n\n${r.formatted}`).join('\n\n\n');
+    resultData.full_text = allResults.map(r => `=== ${r.name} ===\n\n${r.full_text}`).join('\n\n\n');
+  }
+  resultData.segments = allResults.length === 1 ? allResults[0].segments : allResults.map(r => ({file: r.name, segments: r.segments}));
+}
+
+function updatePlainAndJson() {
+  document.getElementById('resultPlain').textContent = resultData.full_text || '';
+  document.getElementById('resultJson').textContent = JSON.stringify(resultData.segments, null, 2);
+}
+
+function formatTs(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${s.toFixed(2).padStart(5,'0')}`;
 }
 
 function downloadResult() {
