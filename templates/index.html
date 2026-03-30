@@ -650,7 +650,7 @@
             Refresh Models</button>
         </div>
       </div>
-      <select class="model-select" id="correctionModel" size="1">
+      <select class="model-select" id="correctionModel" size="1" onchange="onCorrectionModelChange()">
         <option value="gpt-4.1-nano">gpt-4.1-nano - Cheapest, fast</option>
         <option value="gpt-4.1-mini">gpt-4.1-mini - Good balance</option>
         <option value="gpt-4.1">gpt-4.1 - Best quality</option>
@@ -658,6 +658,9 @@
         <option value="gpt-4o">gpt-4o - Previous gen, strong</option>
       </select>
       <div class="correction-hint" id="correctionHint">Uses OpenAI API to fix transcription errors based on context. Requires API key.</div>
+      <div id="correctionStatus" style="margin-top: 10px; padding: 8px 12px; background: #111; border: 1px solid #2a2a2a; border-radius: 8px; font-size: 12px; color: #666; display: none;">
+        <span id="correctionStatusText"></span>
+      </div>
     </div>
   </div>
 
@@ -927,6 +930,7 @@ function setCorrectionProvider(prov, skipSave) {
   } else {
     hint.textContent = 'Uses OpenAI API to fix transcription errors based on context.';
   }
+  updateCorrectionStatus();
 }
 
 function updateCorrectionModels(prov) {
@@ -1162,6 +1166,28 @@ function onCorrectionChange() {
   const enabled = document.getElementById('correctionToggle').checked;
   document.getElementById('correctionOptions').style.display = enabled ? 'block' : 'none';
   localStorage.setItem('stt_correction', enabled ? '1' : '0');
+  updateCorrectionStatus();
+}
+
+function onCorrectionModelChange() {
+  localStorage.setItem('stt_correction_model', document.getElementById('correctionModel').value);
+  updateCorrectionStatus();
+}
+
+function updateCorrectionStatus() {
+  const el = document.getElementById('correctionStatus');
+  const textEl = document.getElementById('correctionStatusText');
+  const enabled = document.getElementById('correctionToggle').checked;
+  if (!enabled) {
+    el.style.display = 'none';
+    return;
+  }
+  const model = document.getElementById('correctionModel').value;
+  const modelLabel = document.getElementById('correctionModel').selectedOptions[0]?.textContent || model;
+  const prov = currentCorrProvider === 'openrouter' ? 'OpenRouter' : 'OpenAI';
+  el.style.display = 'block';
+  el.style.borderColor = '#2a5a2a';
+  textEl.innerHTML = `<span style="color:#6c6">Active:</span> <span style="color:#ccc">${modelLabel}</span> <span style="color:#555">via ${prov}</span>`;
 }
 
 async function loadHistory() {
