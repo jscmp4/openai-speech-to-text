@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Speech to Text v0.6.0</title>
+<title>Speech to Text v0.6.1</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -618,7 +618,7 @@
 </head>
 <body>
 <div class="container">
-  <h1>Speech to Text Transcription <small style="font-size:0.4em;color:#666">v0.6.0</small></h1>
+  <h1>Speech to Text Transcription <small style="font-size:0.4em;color:#666">v0.6.1</small></h1>
 
   <!-- GPU Panel -->
   <div class="gpu-panel" id="gpuPanel">
@@ -807,7 +807,10 @@
 
   <!-- Speaker Identification Panel -->
   <div class="model-section" id="speakerPanel" style="display:none; margin-bottom: 16px;">
-    <label style="font-size: 13px; color: #888; margin-bottom: 10px; display: block;">Identify Speakers — listen and rename</label>
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 10px;">
+      <label style="font-size: 13px; color: #888;">Identify Speakers — listen and rename</label>
+      <button onclick="document.getElementById('speakerPanel').style.display='none'; if(speakerPanelAudio)speakerPanelAudio.pause();" style="background:none; border:none; color:#555; cursor:pointer; font-size:18px; padding:0 4px;" title="Close">&times;</button>
+    </div>
     <div id="speakerList"></div>
     <div style="margin-top: 10px; text-align: right;">
       <button class="btn-action" onclick="applySpeakerNames()" style="background:#4a9eff; color:#fff; border:none; padding: 6px 16px;">Apply Names</button>
@@ -1018,8 +1021,6 @@ function applySpeakerNames() {
     rebuildFormattedText();
     updatePlainAndJson();
   }
-  // Hide panel
-  document.getElementById('speakerPanel').style.display = 'none';
   // Stop any playing audio
   if (speakerPanelAudio) speakerPanelAudio.pause();
 }
