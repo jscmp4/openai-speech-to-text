@@ -182,6 +182,69 @@ def _extract_diarization_segments(output):
     return segments
 
 
+def _extract_speaker_embeddings(output):
+    """Extract per-speaker embeddings from pyannote DiarizeOutput.
+
+    Returns dict {speaker_label: embedding_vector} or empty dict if unavailable.
+    """
+    if not hasattr(output, 'speaker_embeddings') or output.speaker_embeddings is None:
+        return {}
+    embeddings = output.speaker_embeddings  # numpy array (n_speakers, dim)
+    # Get ordered speaker labels from the annotation
+    annotation = None
+    if hasattr(output, 'speaker_diarization'):
+        annotation = output.speaker_diarization
+    elif hasattr(output, 'exclusive_speaker_diarization'):
+        annotation = output.exclusive_speaker_diarization
+    if annotation is None:
+        return {}
+    labels = annotation.labels()
+    if len(labels) != embeddings.shape[0]:
+        return {}
+    return {label: embeddings[i] for i, label in enumerate(labels)}
+
+
+def _remap_chunk_speakers(chunk_segments, chunk_embeddings, global_embeddings, global_counter,
+                          similarity_threshold=0.5):
+    """Remap speaker labels from a chunk to be consistent with global labels.
+
+    Uses cosine similarity between speaker embeddings to match speakers across chunks.
+    Returns (remapped_segments, updated_global_embeddings, updated_global_counter).
+    """
+    import numpy as np
+    if not chunk_embeddings or not chunk_segments:
+        return chunk_segments, global_embeddings, global_counter
+
+    label_map = {}  # chunk-local label -> global label
+    for local_label, local_emb in chunk_embeddings.items():
+        best_global = None
+        best_sim = -1.0
+        local_norm = np.linalg.norm(local_emb)
+        if local_norm == 0:
+            continue
+        for global_label, global_emb in global_embeddings.items():
+            global_norm = np.linalg.norm(global_emb)
+            if global_norm == 0:
+                continue
+            sim = float(np.dot(local_emb, global_emb) / (local_norm * global_norm))
+            if sim > best_sim:
+                best_sim = sim
+                best_global = global_label
+        if best_global is not None and best_sim >= similarity_threshold:
+            label_map[local_label] = best_global
+            # Update global embedding with running average for robustness
+            global_embeddings[best_global] = (global_embeddings[best_global] + local_emb) / 2
+        else:
+            # New speaker not seen before
+            new_label = f"SPEAKER_{global_counter:02d}"
+            global_counter += 1
+            label_map[local_label] = new_label
+            global_embeddings[new_label] = local_emb
+
+    remapped = [(start, end, label_map.get(spk, spk)) for start, end, spk in chunk_segments]
+    return remapped, global_embeddings, global_counter
+
+
 # Max chunk duration for diarization (seconds). Longer files are processed in chunks.
 DIARIZE_CHUNK_SEC = 1200  # 20 minutes
 
@@ -191,12 +254,14 @@ def run_diarization(audio_path, hf_token, num_speakers=None, progress_cb=None):
 
     For long audio (>20 min), processes in chunks to avoid memory issues.
     Supports files of any length including 24+ hours.
-    progress_cb: optional callable(msg) to report progress.
+    progress_cb: optional callable(msg, chunk_idx, n_chunks) to report progress.
+        chunk_idx/n_chunks are 0/0 for non-chunk messages, 1-based otherwise.
     """
     import torch
     pipeline = get_diarization_pipeline(hf_token)
 
-    # Load full audio via ffmpeg
+    if progress_cb:
+        progress_cb("Loading audio for diarization...", 0, 0)
     audio_input = _load_audio_waveform(audio_path)
     total_samples = audio_input["waveform"].shape[1]
     sr = audio_input["sample_rate"]
@@ -209,17 +274,19 @@ def run_diarization(audio_path, hf_token, num_speakers=None, progress_cb=None):
     # Short audio: process in one go
     if total_duration <= DIARIZE_CHUNK_SEC:
         if progress_cb:
-            progress_cb(f"Identifying speakers in {total_duration:.0f}s audio...")
+            progress_cb(f"Identifying speakers in {total_duration:.0f}s audio...", 1, 1)
         output = pipeline(audio_input, **kwargs)
         return _extract_diarization_segments(output)
 
-    # Long audio: process in chunks
+    # Long audio: process in chunks with cross-chunk speaker matching
     n_chunks = math.ceil(total_samples / (DIARIZE_CHUNK_SEC * sr))
     if progress_cb:
-        progress_cb(f"Identifying speakers in {total_duration/60:.0f} min audio ({n_chunks} chunks)...")
+        progress_cb(f"Identifying speakers in {total_duration/60:.0f} min audio ({n_chunks} chunks)...", 0, n_chunks)
     print(f"  Diarizing {total_duration:.0f}s audio in {n_chunks} chunks of {DIARIZE_CHUNK_SEC}s")
     chunk_samples = DIARIZE_CHUNK_SEC * sr
     all_segments = []
+    global_embeddings = {}
+    global_counter = 0
     pos = 0
     chunk_idx = 0
 
@@ -231,24 +298,25 @@ def run_diarization(audio_path, hf_token, num_speakers=None, progress_cb=None):
         chunk_idx += 1
 
         if progress_cb:
-            progress_cb(f"Identifying speakers: chunk {chunk_idx}/{n_chunks} ({offset_sec/60:.0f}-{end/sr/60:.0f} min)...")
+            progress_cb(f"Identifying speakers: chunk {chunk_idx}/{n_chunks} ({offset_sec/60:.0f}-{end/sr/60:.0f} min)...", chunk_idx, n_chunks)
         print(f"    Chunk {chunk_idx}/{n_chunks}: {offset_sec:.0f}s - {end/sr:.0f}s")
         # Don't constrain num_speakers per chunk — let pyannote auto-detect
         output = pipeline(chunk_input)
         chunk_segs = _extract_diarization_segments(output)
+        chunk_embs = _extract_speaker_embeddings(output)
 
-        # Offset timestamps to absolute positions
-        for start_t, end_t, speaker in chunk_segs:
-            all_segments.append((start_t + offset_sec, end_t + offset_sec, speaker))
+        chunk_segs = [(s + offset_sec, e + offset_sec, spk) for s, e, spk in chunk_segs]
+        if chunk_embs:
+            chunk_segs, global_embeddings, global_counter = _remap_chunk_speakers(
+                chunk_segs, chunk_embs, global_embeddings, global_counter)
+        all_segments.extend(chunk_segs)
 
         pos = end
-        # Free memory
         del chunk_waveform, chunk_input, output
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
     return all_segments
-    return segments
 
 
 def _friendly_speaker_label(raw_label):
@@ -501,6 +569,13 @@ def transcribe_local_streaming(model, chunk_path, chunk_offset_sec):
             "start": round(seg.start + chunk_offset_sec, 2),
             "end": round(seg.end + chunk_offset_sec, 2),
         }
+
+
+def format_segment_line(ts, speaker, text):
+    """Format a transcription line, omitting speaker prefix when empty."""
+    if speaker:
+        return f"{ts}  {speaker}: {text}"
+    return f"{ts}  {text}"
 
 
 def format_timestamp(seconds):
@@ -1026,59 +1101,40 @@ def transcribe():
             os.makedirs(_AUDIO_DIR, exist_ok=True)
             playback_path = os.path.join(_AUDIO_DIR, f"{audio_id}.mp3")
             shutil.copy2(audio_path, playback_path)
+            playback_size = os.path.getsize(playback_path)
             # Send audio_id immediately so frontend can enable playback even if later steps fail
             yield sse_event("audio_ready", {"audio_id": audio_id})
+            yield sse_event("log", {"msg": f"Audio extracted: {audio_id}.mp3 ({playback_size / 1024:.0f} KB)"})
 
-            # Step 1.5: Speaker diarization (local mode only, inline chunked)
+            # Step 1.5: Speaker diarization (local mode only)
             diarization_result = None
+            yield sse_event("log", {"msg": f"diarize_enabled={diarize_enabled}, use_local={use_local}, hf_token={'set' if hf_token else 'EMPTY'}, model={model_type}"})
             if diarize_enabled and use_local:
                 yield sse_event("progress", {"step": "diarize", "pct": 8, "msg": "Loading speaker diarization model..."})
+                # Collect SSE events from the callback into a list; yield them after each call
+                _diar_events = []
+                def _diar_progress(msg, chunk_idx, n_chunks):
+                    if n_chunks > 0 and chunk_idx > 0:
+                        pct = 10 + int((chunk_idx / n_chunks) * 8)
+                    else:
+                        pct = 9
+                    _diar_events.append(("progress", {"step": "diarize", "pct": pct, "msg": msg}))
                 try:
-                    import torch as _torch
-                    diar_pipeline = get_diarization_pipeline(hf_token)
-                    yield sse_event("progress", {"step": "diarize", "pct": 9, "msg": "Loading audio for diarization..."})
-                    diar_audio = _load_audio_waveform(audio_path)
-                    total_samples = diar_audio["waveform"].shape[1]
-                    sr = diar_audio["sample_rate"]
-                    total_dur = total_samples / sr
-                    diar_kwargs = {}
-                    if num_speakers and num_speakers > 0:
-                        diar_kwargs["num_speakers"] = num_speakers
-
-                    diarization_result = []
-                    chunk_sec = DIARIZE_CHUNK_SEC
-                    chunk_samples = chunk_sec * sr
-                    n_chunks = max(1, math.ceil(total_samples / chunk_samples))
-
-                    for ci in range(n_chunks):
-                        start_s = ci * chunk_samples
-                        end_s = min(start_s + chunk_samples, total_samples)
-                        offset_sec = start_s / sr
-                        pct = 10 + int((ci / n_chunks) * 8)
-                        yield sse_event("progress", {"step": "diarize", "pct": pct, "msg": f"Identifying speakers: chunk {ci+1}/{n_chunks} ({offset_sec/60:.0f}-{end_s/sr/60:.0f} min)..."})
-
-                        chunk_input = {"waveform": diar_audio["waveform"][:, start_s:end_s], "sample_rate": sr}
-                        # Use num_speakers only for single-chunk (whole file)
-                        kw = diar_kwargs if n_chunks == 1 else {}
-                        output = diar_pipeline(chunk_input, **kw)
-                        chunk_segs = _extract_diarization_segments(output)
-                        print(f"    Diarize chunk {ci+1}/{n_chunks} ({offset_sec:.0f}s-{end_s/sr:.0f}s): {len(chunk_segs)} segments, {len(set(s for _,_,s in chunk_segs))} speakers")
-
-                        for s_start, s_end, spk in chunk_segs:
-                            diarization_result.append((s_start + offset_sec, s_end + offset_sec, spk))
-
-                        del chunk_input, output
-                        if _torch.cuda.is_available():
-                            _torch.cuda.empty_cache()
-
-                    del diar_audio
+                    diarization_result = run_diarization(audio_path, hf_token, num_speakers, progress_cb=_diar_progress)
+                    for evt_type, evt_data in _diar_events:
+                        yield sse_event(evt_type, evt_data)
                     n_speakers = len(set(s for _, _, s in diarization_result))
                     speaker_names = [_friendly_speaker_label(s) for s in sorted(set(s for _, _, s in diarization_result))]
                     yield sse_event("progress", {"step": "diarize", "pct": 18, "msg": f"Found {n_speakers} speaker(s) in {len(diarization_result)} segments: {', '.join(speaker_names)}. Starting transcription..."})
+                    yield sse_event("log", {"msg": f"Diarization: {len(diarization_result)} segments, {n_speakers} speakers: {speaker_names}"})
                     print(f"  Diarization total: {len(diarization_result)} segments, {n_speakers} speakers: {speaker_names}")
                 except Exception as e:
+                    for evt_type, evt_data in _diar_events:
+                        yield sse_event(evt_type, evt_data)
                     import traceback
-                    print(f"  Diarization FAILED: {traceback.format_exc()}")
+                    tb = traceback.format_exc()
+                    print(f"  Diarization FAILED: {tb}")
+                    yield sse_event("log", {"msg": f"Diarization FAILED: {e}", "level": "error"})
                     yield sse_event("progress", {"step": "diarize", "pct": 18, "msg": f"Diarization failed: {e}. Continuing without speaker labels..."})
 
             # Step 2: Split (only needed for OpenAI due to size limits)
@@ -1107,7 +1163,7 @@ def transcribe():
                     # Estimate progress based on timestamp vs total duration
                     pct = min(90, 20 + int((seg["end"] / max(audio_duration, 1)) * 70))
                     ts = f"[{format_timestamp(seg['start'])} -> {format_timestamp(seg['end'])}]"
-                    line = f"{ts}  {seg['speaker']}: {seg['text']}"
+                    line = format_segment_line(ts, seg['speaker'], seg['text'])
                     yield sse_event("segment", {
                         "segment": seg,
                         "line": line,
@@ -1117,16 +1173,19 @@ def transcribe():
                     })
 
                 # Assign speaker labels from diarization
+                yield sse_event("log", {"msg": f"Diarization segments: {len(diarization_result) if diarization_result else 0}, Transcription segments: {len(all_segments)}"})
                 print(f"  Diarization result: {len(diarization_result) if diarization_result else 0} segments, Transcription: {len(all_segments)} segments")
                 if diarization_result and all_segments:
                     yield sse_event("progress", {"step": "assign_speakers", "pct": 91, "msg": "Assigning speaker labels..."})
                     all_segments = assign_speakers(all_segments, diarization_result)
-                    print(f"  Speakers assigned: {set(s['speaker'] for s in all_segments)}")
+                    speakers_found = sorted(set(s['speaker'] for s in all_segments))
+                    yield sse_event("log", {"msg": f"Speakers assigned: {speakers_found}"})
+                    print(f"  Speakers assigned: {speakers_found}")
                     # Re-emit segments with correct speaker labels so frontend can update live preview
                     updated_lines = []
                     for seg in all_segments:
                         ts = f"[{format_timestamp(seg['start'])} -> {format_timestamp(seg['end'])}]"
-                        updated_lines.append(f"{ts}  {seg['speaker']}: {seg['text']}")
+                        updated_lines.append(format_segment_line(ts, seg['speaker'], seg['text']))
                     yield sse_event("speakers_assigned", {
                         "segments": all_segments,
                         "lines": updated_lines,
@@ -1150,7 +1209,7 @@ def transcribe():
                     done_pct = 20 + int(((i + 1) / total) * 70)
                     for seg in segments:
                         ts = f"[{format_timestamp(seg['start'])} -> {format_timestamp(seg['end'])}]"
-                        line = f"{ts}  {seg['speaker']}: {seg['text']}"
+                        line = format_segment_line(ts, seg['speaker'], seg['text'])
                         yield sse_event("segment", {
                             "segment": seg,
                             "line": line,
@@ -1203,9 +1262,8 @@ def transcribe():
             full_text = []
             for seg in merged:
                 ts = f"[{format_timestamp(seg['start'])} -> {format_timestamp(seg['end'])}]"
-                speaker = seg["speaker"]
                 text = seg["text"].strip()
-                lines.append(f"{ts}  {speaker}: {text}")
+                lines.append(format_segment_line(ts, seg["speaker"], text))
                 full_text.append(text)
 
             elapsed = round(__import__("time").time() - _job_start, 1)
@@ -1286,9 +1344,8 @@ def process_transcription(file_obj, api_key):
         full_text = []
         for seg in merged:
             ts = f"[{format_timestamp(seg['start'])} -> {format_timestamp(seg['end'])}]"
-            speaker = seg["speaker"]
             text = seg["text"].strip()
-            lines.append(f"{ts}  {speaker}: {text}")
+            lines.append(format_segment_line(ts, seg["speaker"], text))
             full_text.append(text)
 
         return {

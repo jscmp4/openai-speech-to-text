@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Speech to Text</title>
+<title>Speech to Text v0.6.0</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -461,6 +461,97 @@
     line-height: 1.8;
     color: #ccc;
   }
+  /* Speaker Identification Panel */
+  .speaker-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    margin-bottom: 6px;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 8px;
+  }
+  .speaker-card .speaker-color {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .speaker-card .speaker-info {
+    flex: 1;
+    min-width: 0;
+  }
+  .speaker-card .speaker-original {
+    font-size: 11px;
+    color: #555;
+  }
+  .speaker-card .speaker-stats {
+    font-size: 11px;
+    color: #666;
+  }
+  .speaker-card input.speaker-name-input {
+    background: #111;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #fff;
+    padding: 4px 8px;
+    font-size: 13px;
+    width: 160px;
+  }
+  .speaker-card input.speaker-name-input:focus {
+    border-color: #4a9eff;
+    outline: none;
+  }
+  .speaker-card .speaker-play-btn {
+    background: none;
+    border: 1px solid #444;
+    color: #4a9eff;
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .speaker-card .speaker-play-btn:hover { border-color: #4a9eff; background: #4a9eff11; }
+  .speaker-card .speaker-play-btn.playing { color: #ff6b6b; border-color: #ff6b6b; }
+
+  /* Debug Console */
+  .debug-console {
+    margin-top: 20px;
+    border: 1px solid #333;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .debug-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: #1a1a1a;
+    cursor: pointer;
+    user-select: none;
+  }
+  .debug-header:hover { background: #222; }
+  .debug-header label { font-size: 12px; color: #666; cursor: pointer; }
+  .debug-header .debug-arrow { color: #555; font-size: 10px; transition: transform 0.2s; }
+  .debug-header .debug-arrow.open { transform: rotate(90deg); }
+  .debug-body {
+    max-height: 250px;
+    overflow-y: auto;
+    background: #0a0a0a;
+    font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+    font-size: 11px;
+    line-height: 1.6;
+    padding: 8px 12px;
+    color: #888;
+  }
+  .debug-body:empty::after { content: 'Waiting for logs...'; color: #444; }
+  .debug-line { white-space: pre-wrap; word-break: break-all; }
+  .debug-line.error { color: #ff6b6b; }
+  .debug-line.info { color: #888; }
+  .debug-line.success { color: #4caf50; }
+  .debug-line .debug-ts { color: #555; margin-right: 6px; }
   .play-btn {
     cursor: pointer;
     color: #4a9eff;
@@ -527,7 +618,7 @@
 </head>
 <body>
 <div class="container">
-  <h1>Speech to Text Transcription</h1>
+  <h1>Speech to Text Transcription <small style="font-size:0.4em;color:#666">v0.6.0</small></h1>
 
   <!-- GPU Panel -->
   <div class="gpu-panel" id="gpuPanel">
@@ -714,6 +805,15 @@
     <div class="progress-text" id="progressText">Uploading and processing...</div>
   </div>
 
+  <!-- Speaker Identification Panel -->
+  <div class="model-section" id="speakerPanel" style="display:none; margin-bottom: 16px;">
+    <label style="font-size: 13px; color: #888; margin-bottom: 10px; display: block;">Identify Speakers — listen and rename</label>
+    <div id="speakerList"></div>
+    <div style="margin-top: 10px; text-align: right;">
+      <button class="btn-action" onclick="applySpeakerNames()" style="background:#4a9eff; color:#fff; border:none; padding: 6px 16px;">Apply Names</button>
+    </div>
+  </div>
+
   <!-- Result -->
   <div class="result-area" id="resultArea">
     <div class="result-tabs">
@@ -741,9 +841,189 @@
     </div>
     <div id="historyList" style="font-size: 12px; color: #666;">Loading...</div>
   </div>
+
+  <!-- Debug Console -->
+  <div class="debug-console" id="debugConsole">
+    <div class="debug-header" onclick="toggleDebug()">
+      <label>Server Log</label>
+      <span class="debug-arrow" id="debugArrow">&#9654;</span>
+    </div>
+    <div class="debug-body" id="debugBody" style="display:none;"></div>
+  </div>
 </div>
 
 <script>
+// Debug console
+function toggleDebug() {
+  const body = document.getElementById('debugBody');
+  const arrow = document.getElementById('debugArrow');
+  const open = body.style.display === 'none';
+  body.style.display = open ? '' : 'none';
+  arrow.classList.toggle('open', open);
+  localStorage.setItem('stt_debug_open', open ? '1' : '0');
+  if (open) body.scrollTop = body.scrollHeight;
+}
+function debugLog(msg, level = 'info') {
+  const body = document.getElementById('debugBody');
+  const ts = new Date().toLocaleTimeString();
+  const line = document.createElement('div');
+  line.className = `debug-line ${level}`;
+  line.innerHTML = `<span class="debug-ts">${ts}</span>${msg.replace(/&/g,'&amp;').replace(/</g,'&lt;')}`;
+  body.appendChild(line);
+  // Keep max 500 lines
+  while (body.children.length > 500) body.removeChild(body.firstChild);
+  body.scrollTop = body.scrollHeight;
+}
+// Restore debug panel state
+if (localStorage.getItem('stt_debug_open') === '1') {
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('debugBody').style.display = '';
+    document.getElementById('debugArrow').classList.add('open');
+  });
+}
+
+// Speaker identification panel
+const SPEAKER_COLORS = ['#4a9eff','#ff6b6b','#4caf50','#ff9800','#9c27b0','#00bcd4','#e91e63','#8bc34a'];
+let speakerPanelAudio = null;
+let speakerPanelPlaying = null; // raw speaker label currently playing
+
+function showSpeakerPanel(segments) {
+  // Group segments by speaker, find longest segments for each
+  const bySpk = {};
+  for (const seg of segments) {
+    const spk = seg.speaker;
+    if (!spk || spk === 'speaker') continue;
+    if (!bySpk[spk]) bySpk[spk] = { segments: [], totalDuration: 0 };
+    bySpk[spk].segments.push(seg);
+    bySpk[spk].totalDuration += (seg.end - seg.start);
+  }
+  const speakers = Object.keys(bySpk).sort();
+  if (speakers.length === 0) return;
+
+  const list = document.getElementById('speakerList');
+  list.innerHTML = '';
+
+  speakers.forEach((spk, i) => {
+    const info = bySpk[spk];
+    // Get top 3 longest segments for preview playback
+    const sorted = [...info.segments].sort((a, b) => (b.end - b.start) - (a.end - a.start));
+    const previews = sorted.slice(0, 3);
+    const color = SPEAKER_COLORS[i % SPEAKER_COLORS.length];
+    const totalMin = (info.totalDuration / 60).toFixed(1);
+
+    const card = document.createElement('div');
+    card.className = 'speaker-card';
+    card.innerHTML = `
+      <span class="speaker-color" style="background:${color}"></span>
+      <div class="speaker-info">
+        <div class="speaker-original">${spk} &middot; ${info.segments.length} segments &middot; ${totalMin} min</div>
+      </div>
+      <input class="speaker-name-input" data-speaker="${spk}" value="${speakerNames[spk] || spk}" placeholder="Enter name..." />
+      <button class="speaker-play-btn" data-speaker="${spk}" onclick="playSpeakerPreview('${spk}', this)">&#9654; Listen</button>
+    `;
+    // Store preview segments as data
+    card._previews = previews;
+    list.appendChild(card);
+  });
+
+  document.getElementById('speakerPanel').style.display = '';
+}
+
+function playSpeakerPreview(rawSpeaker, btn) {
+  if (!currentAudioId) return;
+
+  // If already playing this speaker, stop
+  if (speakerPanelPlaying === rawSpeaker && speakerPanelAudio && !speakerPanelAudio.paused) {
+    speakerPanelAudio.pause();
+    btn.innerHTML = '&#9654; Listen';
+    btn.classList.remove('playing');
+    speakerPanelPlaying = null;
+    return;
+  }
+
+  // Stop any other playing
+  document.querySelectorAll('.speaker-play-btn.playing').forEach(b => {
+    b.innerHTML = '&#9654; Listen';
+    b.classList.remove('playing');
+  });
+
+  // Find preview segments for this speaker
+  const card = btn.closest('.speaker-card');
+  const previews = card._previews;
+  if (!previews || previews.length === 0) return;
+
+  // Create/reuse audio
+  if (!speakerPanelAudio || speakerPanelAudio._audioId !== currentAudioId) {
+    if (speakerPanelAudio) { speakerPanelAudio.pause(); speakerPanelAudio.src = ''; }
+    speakerPanelAudio = new Audio('/audio/' + currentAudioId);
+    speakerPanelAudio._audioId = currentAudioId;
+  }
+
+  // Play previews sequentially
+  let previewIdx = 0;
+  speakerPanelPlaying = rawSpeaker;
+  btn.innerHTML = '&#9632; Stop';
+  btn.classList.add('playing');
+
+  function playNext() {
+    if (previewIdx >= previews.length || speakerPanelPlaying !== rawSpeaker) {
+      btn.innerHTML = '&#9654; Listen';
+      btn.classList.remove('playing');
+      speakerPanelPlaying = null;
+      return;
+    }
+    const seg = previews[previewIdx++];
+    speakerPanelAudio.currentTime = seg.start;
+    // Play max 8 seconds per preview
+    const maxEnd = Math.min(seg.end, seg.start + 8);
+    speakerPanelAudio.ontimeupdate = () => {
+      if (speakerPanelAudio.currentTime >= maxEnd) {
+        speakerPanelAudio.ontimeupdate = null;
+        // Brief pause between previews
+        setTimeout(playNext, 300);
+      }
+    };
+    speakerPanelAudio.play().catch(() => {});
+  }
+  playNext();
+}
+
+function applySpeakerNames() {
+  const inputs = document.querySelectorAll('.speaker-name-input');
+  const renames = {}; // raw -> new name
+  inputs.forEach(input => {
+    const raw = input.dataset.speaker;
+    const name = input.value.trim();
+    if (name && name !== raw && name !== speakerNames[raw]) {
+      speakerNames[raw] = name;
+      renames[raw] = name;
+    }
+  });
+  if (Object.keys(renames).length > 0) {
+    // DOM-only update for speaker labels
+    for (const [raw, name] of Object.entries(renames)) {
+      document.querySelectorAll(`.speaker-label[data-speaker="${raw}"]`).forEach(el => {
+        el.textContent = name;
+      });
+    }
+    // Update segment data in background
+    for (const r of allResults) {
+      if (!r.segments) continue;
+      for (const seg of r.segments) {
+        if (renames[seg.speaker]) {
+          seg.speaker = renames[seg.speaker];
+        }
+      }
+    }
+    rebuildFormattedText();
+    updatePlainAndJson();
+  }
+  // Hide panel
+  document.getElementById('speakerPanel').style.display = 'none';
+  // Stop any playing audio
+  if (speakerPanelAudio) speakerPanelAudio.pause();
+}
+
 let selectedFiles = [];
 let currentTab = 'formatted';
 let resultData = {};
@@ -1575,6 +1855,7 @@ async function startBatchTranscribe() {
   allResults = [];
   resultData = {};
   document.getElementById('resultArea').style.display = 'none';
+  document.getElementById('speakerPanel').style.display = 'none';
   document.getElementById('resultFormatted').textContent = '';
   document.getElementById('resultPlain').textContent = '';
   document.getElementById('resultJson').textContent = '';
@@ -1644,10 +1925,14 @@ async function startBatchTranscribe() {
             eventType = line.slice(7).trim();
           } else if (line.startsWith('data: ') && eventType) {
             const data = JSON.parse(line.slice(6));
-            if (eventType === 'status') {
+            if (eventType === 'log') {
+              debugLog(data.msg, data.level || 'info');
+            } else if (eventType === 'status') {
               setDeviceBadge(data.device);
+              debugLog(`Device: ${data.device}, Model: ${data.model || ''}`, 'info');
             } else if (eventType === 'progress') {
               setProgress(data.pct, data.msg);
+              debugLog(data.msg, data.step === 'done' ? 'success' : 'info');
             } else if (eventType === 'segment') {
               streamingSegments.push(data.segment);
               streamingLines.push(data.line);
@@ -1659,13 +1944,17 @@ async function startBatchTranscribe() {
               streamingSegments = data.segments;
               streamingLines = data.lines;
               showLiveResult(file.name, fi, totalFiles, streamingLines, streamingSegments);
+              showSpeakerPanel(data.segments);
+              debugLog(`Speakers assigned: ${[...new Set(data.segments.map(s => s.speaker))].join(', ')}`, 'success');
             } else if (eventType === 'audio_ready') {
               currentAudioId = data.audio_id;
-              console.log('Audio ready:', data.audio_id);
+              debugLog(`Audio ready: ${data.audio_id}`, 'info');
             } else if (eventType === 'result') {
               fileResult = data;
               if (data.audio_id) currentAudioId = data.audio_id;
+              debugLog(`Result: ${data.segments?.length || 0} segments`, 'success');
             } else if (eventType === 'error') {
+              debugLog(`ERROR: ${data.error}`, 'error');
               throw new Error(data.error);
             }
             eventType = '';
@@ -1749,6 +2038,12 @@ function showCombinedResults() {
   if (allResults.length > 0 && allResults[allResults.length - 1].audio_id) {
     currentAudioId = allResults[allResults.length - 1].audio_id;
   }
+  // Show speaker panel if multiple speakers detected (for OpenAI diarized results)
+  const flatSegs = allResults.length === 1 ? (allResults[0].segments || []) : allResults.flatMap(r => r.segments || []);
+  const uniqueSpk = new Set(flatSegs.map(s => s.speaker).filter(s => s && s !== 'speaker'));
+  if (uniqueSpk.size > 1 && document.getElementById('speakerPanel').style.display === 'none') {
+    showSpeakerPanel(flatSegs);
+  }
   renderFormatted();
   document.getElementById('resultPlain').textContent = plain;
   document.getElementById('resultJson').textContent = JSON.stringify(segments, null, 2);
@@ -1805,6 +2100,7 @@ function renderFormatted() {
   const segs = resultData.segments || [];
   let segIdx = 0;
   const html = resultData.formatted.split('\n').map(line => {
+    // Match lines with speaker: [timestamp]  Speaker: text
     const m = line.match(/^(\[[\d:.]+\s*->\s*[\d:.]+\])\s+(.+?):\s(.*)$/);
     if (m) {
       const ts = m[1], rawSpeaker = m[2], text = m[3];
@@ -1879,7 +2175,12 @@ function renameSpeaker(rawSpeaker) {
   // Save mapping
   speakerNames[rawSpeaker] = trimmed;
 
-  // Update all segments in allResults
+  // DOM-only update: just change the text of matching speaker labels
+  document.querySelectorAll(`.speaker-label[data-speaker="${rawSpeaker}"]`).forEach(el => {
+    el.textContent = trimmed;
+  });
+
+  // Update segment data in background (no re-render)
   for (const r of allResults) {
     if (r.segments) {
       for (const seg of r.segments) {
@@ -1887,13 +2188,7 @@ function renameSpeaker(rawSpeaker) {
       }
     }
   }
-
-  // Rebuild formatted text with new names
   rebuildFormattedText();
-
-  // Re-render
-  renderFormatted();
-  // Also update plain text and JSON
   updatePlainAndJson();
 }
 
@@ -1934,14 +2229,19 @@ function downloadResult() {
   if (currentTab === 'formatted') text = resultData.formatted;
   else if (currentTab === 'plain') text = resultData.full_text;
   else { text = JSON.stringify(resultData.segments, null, 2); ext = '.json'; }
-  downloadBlob(text, 'transcription' + ext);
+  // Use original filename if available
+  let baseName = 'transcription';
+  if (allResults.length === 1 && allResults[0].name) {
+    baseName = allResults[0].name.replace(/\.[^.]+$/, '') + '_transcript';
+  }
+  downloadBlob(text, baseName + ext);
 }
 
 function downloadAllResults() {
   // Download each file's result separately
   for (const r of allResults) {
     const baseName = r.name.replace(/\.[^.]+$/, '');
-    downloadBlob(r.formatted, baseName + '_transcription.txt');
+    downloadBlob(r.formatted, baseName + '_transcript.txt');
   }
 }
 
